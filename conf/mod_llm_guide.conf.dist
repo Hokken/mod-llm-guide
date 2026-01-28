@@ -1,0 +1,224 @@
+#
+# LLM Guide Module Configuration
+#
+# This module allows players to ask questions to an AI assistant (Azeroth Guide)
+# using the .llm ask command. Responses are powered by external LLM APIs
+# (Anthropic Claude or OpenAI GPT) via a Python bridge script.
+#
+# SETUP INSTRUCTIONS:
+# 1. Copy this file to your server's config directory as mod_llm_guide.conf
+# 2. Configure your API key and provider below
+# 3. Run the SQL migration to create the llm_guide_queue table
+# 4. Start the Python bridge: python tools/llm_guide_bridge.py --config /path/to/mod_llm_guide.conf
+# 5. Set LLMGuide.Enable = 1 and restart the worldserver
+#
+
+###############################################################################
+# LLM GUIDE MODULE SETTINGS
+###############################################################################
+
+#
+#   LLMGuide.Enable
+#       Enable or disable the LLM Chat module
+#       Default: 0 (disabled)
+#
+LLMGuide.Enable = 0
+
+#
+#   LLMGuide.EnableVerboseLogging
+#       Enable detailed logging for debugging (tool calls, context, timing, etc.)
+#       Disable in production to reduce log volume and improve performance
+#       Default: 0 (disabled)
+#
+LLMGuide.EnableVerboseLogging = 0
+
+#
+#   LLMGuide.CooldownSeconds
+#       Minimum seconds between questions per player
+#       Prevents API spam and encourages thoughtful questions
+#       Default: 10
+#
+LLMGuide.CooldownSeconds = 10
+
+#
+#   LLMGuide.PollIntervalMs
+#       How often (in milliseconds) the server checks for completed responses
+#       Lower = faster response delivery, higher CPU usage
+#       Default: 1000 (1 second)
+#
+LLMGuide.PollIntervalMs = 1000
+
+#
+#   LLMGuide.MaxResponseLength
+#       Maximum characters per response chunk
+#       WoW chat has message length limits, so long responses are split
+#       Default: 800
+#
+LLMGuide.MaxResponseLength = 800
+
+#
+#   LLMGuide.MaxPendingPerPlayer
+#       Maximum pending questions per player
+#       Prevents queue flooding
+#       Default: 3
+#
+LLMGuide.MaxPendingPerPlayer = 3
+
+###############################################################################
+# LLM API SETTINGS (Used by Python bridge)
+###############################################################################
+
+#
+#   LLMGuide.Provider
+#       Which LLM provider to use: "anthropic" or "openai"
+#       Default: anthropic
+#
+LLMGuide.Provider = anthropic
+
+#
+#   LLMGuide.Anthropic.ApiKey
+#       Your Anthropic API key (starts with sk-ant-)
+#       Get one at: https://console.anthropic.com/
+#       Default: (empty - must be configured)
+#
+LLMGuide.Anthropic.ApiKey =
+
+#
+#   LLMGuide.Anthropic.Model
+#       Anthropic model to use
+#       Options: claude-haiku-4-5-20251001 (fast/cheap), claude-sonnet-4-20250514 (balanced)
+#       Default: claude-haiku-4-5-20251001
+#
+LLMGuide.Anthropic.Model = claude-haiku-4-5-20251001
+
+#
+#   LLMGuide.OpenAI.ApiKey
+#       Your OpenAI API key (starts with sk-)
+#       Get one at: https://platform.openai.com/api-keys
+#       Default: (empty - must be configured)
+#
+LLMGuide.OpenAI.ApiKey =
+
+#
+#   LLMGuide.OpenAI.Model
+#       OpenAI model to use
+#       Options: gpt-4o-mini (fast/cheap), gpt-4o (balanced)
+#       Default: gpt-4o-mini
+#
+LLMGuide.OpenAI.Model = gpt-4o-mini
+
+#
+#   LLMGuide.MaxTokens
+#       Maximum tokens in the LLM response
+#       Higher = longer responses but more cost
+#       Default: 300
+#
+LLMGuide.MaxTokens = 300
+
+#
+#   LLMGuide.Temperature
+#       LLM temperature (0.0 = focused, 1.0 = creative)
+#       Default: 0.7
+#
+LLMGuide.Temperature = 0.7
+
+#
+#   LLMGuide.DistanceUnit
+#       Unit for displaying distances to NPCs/locations
+#       "yards" - WoW default (e.g. ~97 yards southwest)
+#       "meters" - metric (e.g. ~89 m southwest, ~1.2 km for 1000m+)
+#       Default: yards
+#
+LLMGuide.DistanceUnit = yards
+
+#
+#   LLMGuide.SystemPrompt
+#       The system prompt that defines the AI's personality
+#       Use \n for newlines. Keep it concise to save tokens.
+#       Default: See below
+#
+LLMGuide.SystemPrompt = You are the Azeroth Guide, a wise advisor for World of Warcraft: WotLK (3.3.5). Help players with class builds, leveling, dungeons, professions, and game mechanics. Be friendly and concise. Use WoW terminology. Keep responses under 500 characters. If unsure about WotLK specifics, say so. Level cap is 80, Northrend is endgame. CRITICAL: Plain text only, single paragraph, no line breaks, no markdown, no asterisks, no bullet points.
+
+###############################################################################
+# DATABASE SETTINGS (Used by Python bridge)
+###############################################################################
+
+#
+#   LLMGuide.Database.Host
+#       Database server hostname
+#       Default: localhost
+#
+LLMGuide.Database.Host = localhost
+
+#
+#   LLMGuide.Database.Port
+#       Database server port
+#       Default: 3306
+#
+LLMGuide.Database.Port = 3306
+
+#
+#   LLMGuide.Database.User
+#       Database username
+#       Default: acore
+#
+LLMGuide.Database.User = acore
+
+#
+#   LLMGuide.Database.Password
+#       Database password
+#       Default: acore
+#
+LLMGuide.Database.Password = acore
+
+#
+#   LLMGuide.Database.Name
+#       Characters database name
+#       Default: acore_characters
+#
+LLMGuide.Database.Name = acore_characters
+
+#
+#   LLMGuide.Bridge.PollIntervalSeconds
+#       How often the Python bridge checks for new questions
+#       Default: 2
+#
+LLMGuide.Bridge.PollIntervalSeconds = 2
+
+###############################################################################
+# MEMORY SETTINGS (Conversation history per character)
+###############################################################################
+
+#
+#   LLMGuide.Memory.Enable
+#       Enable conversation memory (stores brief summaries of past Q&A)
+#       When enabled, the AI remembers previous conversations with each character
+#       Default: 1 (enabled)
+#
+LLMGuide.Memory.Enable = 1
+
+#
+#   LLMGuide.Memory.MaxPerCharacter
+#       Maximum number of memory entries to store per character
+#       Oldest entries are automatically pruned when limit is reached
+#       Default: 20
+#
+LLMGuide.Memory.MaxPerCharacter = 20
+
+#
+#   LLMGuide.Memory.ContextCount
+#       Number of recent memories to include in the AI's context (detailed format)
+#       More memories = more context but higher token usage
+#       Default: 5
+#
+LLMGuide.Memory.ContextCount = 5
+
+#
+#   LLMGuide.Memory.SummarizeThreshold
+#       Number of older memories to summarize into topics
+#       Memories beyond ContextCount are condensed into a "Previously discussed topics" line
+#       This prevents context bloat while preserving conversation history
+#       Set to 0 to disable summarization of older memories
+#       Default: 10
+#
+LLMGuide.Memory.SummarizeThreshold = 10

@@ -1,0 +1,4 @@
+# Python dependencies for llm_guide_bridge.py
+mysql-connector-python>=8.0.0
+anthropic>=0.40.0
+openai>=1.50.0
