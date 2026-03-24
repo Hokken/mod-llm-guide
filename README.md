@@ -41,21 +41,6 @@ Azeroth Guide: Congrats on 40! A few things to look into:
     zones. You've got 3 quests in STV already in your log
 ```
 
-**It remembers what you talked about:**
-```
-You: .ag what drops from Edwin VanCleef?
-Azeroth Guide: [Edwin VanCleef] in the Deadmines drops:
-  [Blackened Defias Armor] (16%), [Cape of the Brotherhood] (14%),
-  [Cruel Barb] (12%), and the quest item [Head of VanCleef]
-  for [The Defias Brotherhood] chain.
-
-You: .ag is any of that good for me?
-Azeroth Guide: At level 22, [Blackened Defias Armor] would be a solid
-  upgrade for your chest slot, it has 14 Agility which is great for
-  a Rogue. [Cruel Barb] is also worth grabbing, 2.8 speed with
-  a proc that fits your combat style.
-```
-
 **It pulls real data from your server's database, not from memory:**
 ```
 You: .ag where can I mine tin around here?
@@ -81,9 +66,6 @@ Every NPC, trainer, and vendor result includes how far they are and which direct
 
 ### Knows Your Character Inside Out
 The guide doesn't give generic answers. It reads your character's live state from the server: level, race, class, zone, gold, talent spec, professions (with skill levels), gear, guild, group status, and your full quest log. Ask "what quests can I do here?" and it filters by your level, class, and faction. Ask "where should I train mining?" and it knows your current skill level.
-
-### Conversation Memory
-The guide remembers what you asked. Mention [Hogger] in one question, then say "where is he?", it knows who you mean. Previous conversations are replayed as real multi-turn context so follow-ups, pronouns, and references just work. Older topics are summarized so the guide stays aware without burning through tokens.
 
 ### Clickable WoW Links
 Every item, quest, spell, and NPC name in responses becomes a proper in-game hyperlink you can click, just like links from real players. Hover for tooltips, click to inspect. The guide formats them with correct quality colors and IDs straight from the database.
