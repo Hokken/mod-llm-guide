@@ -18,9 +18,12 @@
 #include "ScriptMgr.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
-#include <unordered_map>
-#include <sstream>
 #include <algorithm>
+#include <cctype>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <unordered_map>
 
 // The name players whisper to for the AI assistant
 static const std::string GUIDE_NAME = "AzerothGuide";
@@ -33,6 +36,9 @@ static std::unordered_map<uint32, time_t> playerCooldowns;
 
 // Store player equipment for item link matching (guid -> map of item name -> item ID)
 static std::unordered_map<uint32, std::unordered_map<std::string, uint32>> playerEquipment;
+
+static constexpr uint32 DEFAULT_HISTORY_COUNT = 5;
+static constexpr uint32 MAX_HISTORY_COUNT = 10;
 
 // Forward declaration
 static bool SubmitQuestion(Player* player, const std::string& question, bool isWhisper = false);
@@ -733,6 +739,108 @@ static std::string StripMarkdown(const std::string& text)
     return result;
 }
 
+static std::string CollapseWhitespace(const std::string& text)
+{
+    std::string result;
+    result.reserve(text.length());
+
+    bool previousWasSpace = false;
+    for (char ch : text)
+    {
+        if (ch == '\r' || ch == '\n' || ch == '\t')
+            ch = ' ';
+
+        if (ch == ' ')
+        {
+            if (!previousWasSpace)
+                result.push_back(ch);
+
+            previousWasSpace = true;
+            continue;
+        }
+
+        result.push_back(ch);
+        previousWasSpace = false;
+    }
+
+    if (!result.empty() && result.front() == ' ')
+        result.erase(result.begin());
+
+    while (!result.empty() && result.back() == ' ')
+        result.pop_back();
+
+    return result;
+}
+
+static std::string TruncateText(const std::string& text, size_t maxLength)
+{
+    if (text.length() <= maxLength)
+        return text;
+
+    if (maxLength <= 3)
+        return text.substr(0, maxLength);
+
+    return text.substr(0, maxLength - 3) + "...";
+}
+
+static std::string NormalizeGuideText(const std::string& text)
+{
+    std::string cleaned = StripMarkdown(text);
+    return CollapseWhitespace(cleaned);
+}
+
+static std::string ConvertGuideLinks(
+    Player* player,
+    const std::string& normalizedText)
+{
+    uint32 guid = player ? player->GetGUID().GetCounter() : 0;
+    return ConvertAllLinks(normalizedText, guid);
+}
+
+static std::string ProcessGuideText(Player* player, const std::string& text)
+{
+    return ConvertGuideLinks(player, NormalizeGuideText(text));
+}
+
+static std::vector<std::string> SplitRawChatChunks(
+    const std::string& text,
+    size_t maxLength)
+{
+    std::vector<std::string> chunks;
+    if (text.empty())
+        return chunks;
+
+    size_t start = 0;
+    while (start < text.length())
+    {
+        size_t end = start + maxLength;
+        if (end >= text.length())
+        {
+            chunks.push_back(text.substr(start));
+            break;
+        }
+
+        size_t lastSpace = text.rfind(' ', end);
+        if (lastSpace == std::string::npos || lastSpace <= start)
+            lastSpace = end;
+
+        chunks.push_back(text.substr(start, lastSpace - start));
+        start = lastSpace;
+
+        while (start < text.length() && text[start] == ' ')
+            ++start;
+    }
+
+    return chunks;
+}
+
+static const std::string& GetGuideLink()
+{
+    static const std::string guideLink =
+        "|Hplayer:" + GUIDE_NAME + "|h|cFF66AAFF[Azeroth Guide]|h|r";
+    return guideLink;
+}
+
 // Build character context string
 static std::string BuildCharacterContext(Player* player)
 {
@@ -982,6 +1090,176 @@ static bool SubmitQuestion(Player* player, const std::string& questionStr, bool 
     return true;
 }
 
+static void PopulateHistoryEntryFromSummary(
+    const std::string& summary,
+    std::string& question,
+    std::string& response)
+{
+    if (!question.empty() && !response.empty())
+        return;
+
+    if (summary.rfind("Q: ", 0) == 0)
+    {
+        size_t answerPos = summary.find(" | A: ");
+        if (answerPos != std::string::npos)
+        {
+            if (question.empty())
+                question = summary.substr(3, answerPos - 3);
+
+            if (response.empty())
+                response = summary.substr(answerPos + 6);
+
+            return;
+        }
+    }
+
+    LOG_DEBUG("module",
+        "LLM Chat: Unrecognized history summary format for fallback: {}",
+        summary);
+
+    if (question.empty())
+        question = summary;
+}
+
+static bool ShowHistory(ChatHandler* handler, Player* player, uint32 requestedCount)
+{
+    uint32 count = std::min(std::max(requestedCount, 1u), MAX_HISTORY_COUNT);
+    uint32 guid = player->GetGUID().GetCounter();
+
+    // Command handlers take the simple synchronous path for now. If this
+    // becomes hot or latency-sensitive, revisit with an async query flow.
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT summary, question, response "
+        "FROM llm_guide_memory "
+        "WHERE character_guid = {} "
+        "ORDER BY created_at DESC "
+        "LIMIT {}",
+        guid,
+        count);
+
+    if (!result)
+    {
+        handler->PSendSysMessage(
+            "{}: You don't have any saved conversation history yet.",
+            GetGuideLink());
+        return true;
+    }
+
+    uint64 rowCount = result->GetRowCount();
+    handler->PSendSysMessage(
+        "{}: Showing your last {} conversation(s).",
+        GetGuideLink(),
+        rowCount);
+
+    uint32 index = 1;
+    do
+    {
+        Field* fields = result->Fetch();
+        std::string summary = fields[0].Get<std::string>();
+        std::string question = fields[1].Get<std::string>();
+        std::string response = fields[2].Get<std::string>();
+
+        PopulateHistoryEntryFromSummary(summary, question, response);
+
+        std::string normalizedQuestion = NormalizeGuideText(question);
+        std::string normalizedResponse = NormalizeGuideText(response);
+        normalizedQuestion = TruncateText(normalizedQuestion, 160);
+        normalizedResponse = TruncateText(normalizedResponse, 220);
+
+        std::string formattedQuestion =
+            ConvertGuideLinks(player, normalizedQuestion);
+        std::string formattedResponse =
+            ConvertGuideLinks(player, normalizedResponse);
+
+        if (formattedQuestion.empty())
+            formattedQuestion = "(empty question)";
+        if (formattedResponse.empty())
+            formattedResponse = "(empty response)";
+
+        handler->PSendSysMessage(
+            "|cFF66AAFF[{}]|r |cFFFFFF00Q:|r {}",
+            index,
+            formattedQuestion);
+        handler->PSendSysMessage(
+            "    |cFF66AAFFA:|r {}",
+            formattedResponse);
+        ++index;
+    } while (result->NextRow());
+
+    return true;
+}
+
+static bool ClearHistory(ChatHandler* handler, Player* player)
+{
+    uint32 guid = player->GetGUID().GetCounter();
+
+    // Best-effort pre-delete count for user feedback. A concurrent bridge
+    // write could make the reported count slightly stale.
+    QueryResult countResult = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM llm_guide_memory WHERE character_guid = {}",
+        guid);
+
+    uint32 deletedCount = 0;
+    if (countResult)
+        deletedCount = (*countResult)[0].Get<uint32>();
+
+    CharacterDatabase.Execute(
+        "DELETE FROM llm_guide_memory WHERE character_guid = {}",
+        guid);
+
+    handler->PSendSysMessage(
+        "{}: Cleared {} conversation {}.",
+        GetGuideLink(),
+        deletedCount,
+        deletedCount == 1 ? "entry" : "entries");
+    return true;
+}
+
+static bool TryHandleAgAliasCommand(
+    ChatHandler* handler,
+    Player* player,
+    const std::string& questionStr)
+{
+    std::string input = CollapseWhitespace(questionStr);
+
+    if (input == "clear")
+        return ClearHistory(handler, player);
+
+    if (input == "history")
+        return ShowHistory(handler, player, DEFAULT_HISTORY_COUNT);
+
+    constexpr char historyPrefix[] = "history ";
+    if (input.rfind(historyPrefix, 0) == 0)
+    {
+        std::string countStr = input.substr(sizeof(historyPrefix) - 1);
+        bool isDigitsOnly = !countStr.empty() && std::all_of(
+            countStr.begin(),
+            countStr.end(),
+            [](unsigned char ch) { return std::isdigit(ch) != 0; });
+
+        if (!isDigitsOnly)
+            return false;
+
+        try
+        {
+            unsigned long parsed = std::stoul(countStr);
+            if (parsed > 0 &&
+                parsed <= std::numeric_limits<uint32>::max())
+            {
+                return ShowHistory(
+                    handler,
+                    player,
+                    static_cast<uint32>(parsed));
+            }
+        }
+        catch (const std::exception&)
+        {
+        }
+    }
+
+    return false;
+}
+
 class LLMGuide_CommandScript : public CommandScript
 {
 public:
@@ -989,14 +1267,8 @@ public:
 
     ChatCommandTable GetCommands() const override
     {
-        static ChatCommandTable llmChatCommandTable =
-        {
-            { "ag", HandleAskCommand, SEC_PLAYER, Console::No },
-        };
-
         static ChatCommandTable commandTable =
         {
-            { "llm", llmChatCommandTable },
             { "ag", HandleAskCommand, SEC_PLAYER, Console::No },  // Shortcut: .ag
         };
 
@@ -1010,9 +1282,14 @@ public:
             return false;
 
         std::string questionStr = std::string(question);
+
+        if (TryHandleAgAliasCommand(handler, player, questionStr))
+            return true;
+
         SubmitQuestion(player, questionStr, false);
         return true;
     }
+
 };
 
 class LLMGuide_WorldScript : public WorldScript
@@ -1114,50 +1391,26 @@ private:
         const uint32 maxLen = sLLMGuideConfig->GetMaxResponseLength();
         ChatHandler handler(player->GetSession());
 
-        // Strip markdown formatting (bold/italic asterisks) before processing
-        std::string cleanResponse = StripMarkdown(response);
+        std::string normalizedResponse = NormalizeGuideText(response);
 
-        // Convert markers to clickable WoW links (items, spells, quests)
-        // Pass player GUID to enable equipment item name -> link conversion
-        uint32 guid = player->GetGUID().GetCounter();
-        std::string processedResponse = ConvertAllLinks(cleanResponse, guid);
-
-        // Clickable player link - clicking opens whisper to AzerothGuide
-        const std::string guideLink = "|Hplayer:" + GUIDE_NAME + "|h|cFF66AAFF[Azeroth Guide]|h|r";
-
-        if (processedResponse.length() <= maxLen)
+        if (normalizedResponse.length() <= maxLen)
         {
-            handler.PSendSysMessage("{}: {}", guideLink, processedResponse);
+            handler.PSendSysMessage(
+                "{}: {}",
+                GetGuideLink(),
+                ConvertGuideLinks(player, normalizedResponse));
             return;
         }
 
-        // Split into chunks at word boundaries
-        size_t start = 0;
         int chunkNum = 1;
-
-        while (start < processedResponse.length())
+        for (const std::string& rawChunk :
+             SplitRawChatChunks(normalizedResponse, maxLen))
         {
-            size_t end = start + maxLen;
-
-            if (end >= processedResponse.length())
-            {
-                end = processedResponse.length();
-            }
-            else
-            {
-                // Find last space before maxLen
-                size_t lastSpace = processedResponse.rfind(' ', end);
-                if (lastSpace > start)
-                    end = lastSpace;
-            }
-
-            std::string chunk = processedResponse.substr(start, end - start);
-            handler.PSendSysMessage("{} [{}]: {}", guideLink, chunkNum, chunk);
-
-            start = end;
-            if (start < processedResponse.length() && processedResponse[start] == ' ')
-                start++; // Skip the space
-
+            handler.PSendSysMessage(
+                "{} [{}]: {}",
+                GetGuideLink(),
+                chunkNum,
+                ConvertGuideLinks(player, rawChunk));
             chunkNum++;
         }
     }

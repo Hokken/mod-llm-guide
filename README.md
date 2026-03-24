@@ -73,18 +73,42 @@ Every item, quest, spell, and NPC name in responses becomes a proper in-game hyp
 ### Multi-Provider Support
 Works with Anthropic Claude or OpenAI GPT, any model that supports tool calling. Haiku and GPT-4o-mini are the sweet spot: fast, cheap, and more than capable for database lookups. Local models (Ollama) are not currently supported, reliable function/tool calling across 29 tools requires models that can handle complex multi-step reasoning, and local models aren't quite there yet. Ollama support is on the roadmap for when local models catch up.
 
-### Tool Categories
+### What You Can Ask It About
 
-| Category | Tools | Examples |
-|----------|-------|----------|
-| NPCs & Services | 6 | Vendors, trainers, battlemasters, weapon skill trainers |
-| Quests | 5 | Quest info, chains, class quests, quest givers |
-| Spells | 2 | Spell details, spells by level |
-| Items & Loot | 4 | Item stats, upgrades, boss/creature drops |
-| Creatures | 4 | Find mobs, rare spawns, hunter pets |
-| Gathering | 4 | Fishing, herbs, mining by zone, recipe sources |
-| World | 3 | Dungeon info, flight paths, zone info |
-| Reputation | 1 | Faction rep sources and rewards |
+Azeroth Guide is not just a quest bot. It can help with most of the
+questions players actually ask while leveling, gearing, traveling, and
+planning what to do next.
+
+- **NPCs and services**
+  Find vendors, trainers, innkeepers, bankers, flight masters,
+  battlemasters, and weapon skill trainers near you.
+
+- **Quests**
+  Check who starts a quest, what it rewards, what comes next in a chain,
+  and which quests make sense for your level or class.
+
+- **Spells and training**
+  See when your class learns a spell, how much it costs to train, and
+  what abilities you should already have by your current level.
+
+- **Items and loot**
+  Look up item stats, possible upgrades, boss drops, and creature loot
+  tables.
+
+- **Creatures and rare spawns**
+  Find named mobs, hostile creatures in a zone, hunter pets, and rare
+  spawns.
+
+- **Gathering and professions**
+  Ask where to fish, mine, pick herbs, or where a recipe comes from.
+
+- **Zones, dungeons, and travel**
+  Check zone level ranges, dungeon bosses, nearby zones, and flight
+  paths.
+
+- **Reputation**
+  See how to gain rep, what rewards unlock, and whether a faction is
+  worth working on.
 
 ## Requirements
 
@@ -184,9 +208,25 @@ Database tables are created automatically on first run.
 
 ```
 .ag <question>
+.ag history
+.ag history 10
+.ag clear
 ```
 
-Alternative syntax: `.llm ag <question>`
+### Commands
+
+| Command | What it does |
+|---------|--------------|
+| `.ag <question>` | Ask Azeroth Guide a question |
+| `.ag history` | Show your last 5 saved guide conversations |
+| `.ag history <count>` | Show your most recent saved conversations, up to 10 |
+| `.ag clear` | Clear this character's saved guide conversation history |
+
+### Notes
+
+- History is stored per character
+- `.ag clear` only clears guide conversation memory/history
+- It does not cancel pending questions or change cooldowns
 
 ## Configuration
 
