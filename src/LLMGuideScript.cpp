@@ -1169,7 +1169,9 @@ class LLMGuide_ServerScript : public ServerScript
 public:
     LLMGuide_ServerScript() : ServerScript("LLMGuide_ServerScript", {SERVERHOOK_CAN_PACKET_RECEIVE}) {}
 
-    bool CanPacketReceive(WorldSession* session, WorldPacket& packet) override
+    bool CanPacketReceive(
+        WorldSession* session,
+        WorldPacket const& packet) override
     {
         if (!sLLMGuideConfig->IsEnabled())
             return true;
@@ -1177,61 +1179,56 @@ public:
         if (packet.GetOpcode() != CMSG_MESSAGECHAT)
             return true;
 
-        // Minimum packet size: type(4) + lang(4) + at least 1 byte for strings
+        // Minimum packet size:
+        // type(4) + lang(4) + at least 1 byte
         if (packet.size() < 9)
             return true;
 
-        // Save position to restore later
-        size_t oldPos = packet.rpos();
+        // Packet is const — make a local copy to
+        // parse without affecting the original.
+        WorldPacket copy(packet);
 
         try
         {
-            // Read packet data
             uint32 type;
             uint32 lang;
-            packet >> type >> lang;
+            copy >> type >> lang;
 
-            // Only interested in whispers
             if (type != CHAT_MSG_WHISPER)
-            {
-                packet.rpos(oldPos);
                 return true;
-            }
 
-            // Read target name
             std::string to;
-            packet >> to;
+            copy >> to;
 
-            // Read message
-            std::string msg = packet.ReadCString(lang != LANG_ADDON);
+            std::string msg =
+                copy.ReadCString(lang != LANG_ADDON);
 
-            // Restore packet position for normal processing if not for us
-            packet.rpos(oldPos);
+            // Case-insensitive comparison
+            std::string toLower = to;
+            std::transform(
+                toLower.begin(), toLower.end(),
+                toLower.begin(), ::tolower);
 
-        // Case-insensitive comparison
-        std::string toLower = to;
-        std::transform(toLower.begin(), toLower.end(), toLower.begin(), ::tolower);
+            if (toLower != GUIDE_NAME_LOWER)
+                return true;
 
-        if (toLower != GUIDE_NAME_LOWER)
-            return true;  // Not for us, continue normal processing
+            Player* player = session->GetPlayer();
+            if (!player)
+                return true;
 
-        // It's a whisper to AzerothGuide!
-        Player* player = session->GetPlayer();
-        if (!player)
-            return true;
+            LOG_DEBUG("module",
+                "LLM Chat: {} whispered to "
+                "AzerothGuide: {}",
+                player->GetName(), msg);
 
-        LOG_DEBUG("module", "LLM Chat: {} whispered to AzerothGuide: {}", player->GetName(), msg);
+            SubmitQuestion(player, msg, true);
 
-        // Submit the question
-        SubmitQuestion(player, msg, true);
-
-        // Return false to prevent "Player not found" error
-        return false;
+            // Return false to prevent
+            // "Player not found" error
+            return false;
         }
         catch (const ByteBufferException&)
         {
-            // Malformed packet - restore position and let normal handler deal with it
-            packet.rpos(oldPos);
             return true;
         }
     }
