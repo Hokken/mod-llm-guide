@@ -2,7 +2,7 @@
 # LLM Guide Module Configuration
 #
 # This module allows players to ask questions to an AI assistant (Azeroth Guide)
-# using the .llm ask command. Responses are powered by external LLM APIs
+# using the .ag command. Responses are powered by external LLM APIs
 # (Anthropic Claude or OpenAI GPT) via a Python bridge script.
 #
 # SETUP INSTRUCTIONS:
