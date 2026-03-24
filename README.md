@@ -206,10 +206,16 @@ Database tables are created automatically on first run.
 
 ## Usage
 
+Use `.ag` for both normal questions and saved-history navigation.
+
 ```
 .ag <question>
 .ag history
 .ag history 10
+.ag history page 2
+.ag history 10 page 2
+.ag show 1
+.ag show 11
 .ag clear
 ```
 
@@ -218,13 +224,43 @@ Database tables are created automatically on first run.
 | Command | What it does |
 |---------|--------------|
 | `.ag <question>` | Ask Azeroth Guide a question |
-| `.ag history` | Show your last 5 saved guide conversations |
-| `.ag history <count>` | Show your most recent saved conversations, up to 10 |
+| `.ag history` | Show page 1 of your saved history with 5 numbered entries by default |
+| `.ag history <count>` | Show page 1 with up to `<count>` entries, capped at 10 |
+| `.ag history page <number>` | Move to another history page while keeping the default page size of 5 |
+| `.ag history <count> page <number>` | Move to a specific history page while also choosing how many entries to show per page, up to 10 |
+| `.ag show <number>` | Open one saved interaction by its history number and show the full stored question and full stored answer |
 | `.ag clear` | Clear this character's saved guide conversation history |
+
+### History Navigation
+
+Think of `.ag history` as your index and `.ag show` as your open
+command.
+
+- Run `.ag history` to see your most recent numbered entries.
+- If you want older entries, run `.ag history page 2`, `.ag history page 3`, and so on.
+- If you want more entries per page, use `.ag history 10` or `.ag history 10 page 2`.
+- When you find the entry you want, run `.ag show <number>` with that exact number.
+
+Example flow:
+
+```text
+.ag history
+1. Q: what are my next spells
+2. Q: where is the mining trainer
+3. Q: what dungeon should I run
+
+.ag show 2
+```
+
+That will open the full saved question and full saved answer for entry
+`2`.
 
 ### Notes
 
 - History is stored per character
+- In `.ag history`, entry `1` is always your most recent interaction
+- History numbering stays consistent across pages, so if page 2 shows
+  `11.`, you can open it with `.ag show 11`
 - `.ag clear` only clears guide conversation memory/history
 - It does not cancel pending questions or change cooldowns
 

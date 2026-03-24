@@ -765,6 +765,11 @@ class LLMBridge:
             system_prompt = self.build_system_prompt(char_context, memories)
 
             # Add tool use instructions to system prompt
+            unit_label = (
+                "meters (m) and kilometers (km)"
+                if self.distance_unit == "meters"
+                else "yards"
+            )
             system_prompt += (
                 "\n\nYou have access to tools that "
                 "query the ACTUAL game database. "
@@ -776,7 +781,9 @@ class LLMBridge:
                 "the facts. Your training data may "
                 "be wrong or from a different game "
                 "version. The database is the source "
-                "of truth for this 3.3.5a server."
+                "of truth for this 3.3.5a server.\n"
+                "When reporting distances, ALWAYS "
+                f"use {unit_label}. Never mix units."
             )
 
             # Log the full system prompt being sent

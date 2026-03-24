@@ -802,6 +802,87 @@ static std::string ProcessGuideText(Player* player, const std::string& text)
     return ConvertGuideLinks(player, NormalizeGuideText(text));
 }
 
+static bool SplitCommandTail(
+    const std::string& input,
+    const std::string& prefix,
+    std::string& tail)
+{
+    if (input.rfind(prefix, 0) != 0)
+        return false;
+
+    tail = input.substr(prefix.length());
+    return true;
+}
+
+static bool TryParsePositiveUInt32(
+    const std::string& text,
+    uint32& value)
+{
+    bool isDigitsOnly = !text.empty() && std::all_of(
+        text.begin(),
+        text.end(),
+        [](unsigned char ch) { return std::isdigit(ch) != 0; });
+
+    if (!isDigitsOnly)
+        return false;
+
+    try
+    {
+        unsigned long parsed = std::stoul(text);
+        if (parsed == 0 ||
+            parsed > std::numeric_limits<uint32>::max())
+        {
+            return false;
+        }
+
+        value = static_cast<uint32>(parsed);
+        return true;
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+}
+
+static bool TryParseHistoryArguments(
+    const std::string& input,
+    uint32& requestedCount,
+    uint32& requestedPage)
+{
+    requestedCount = DEFAULT_HISTORY_COUNT;
+    requestedPage = 1;
+
+    if (input == "history")
+        return true;
+
+    std::string tail;
+    if (!SplitCommandTail(input, "history ", tail))
+        return false;
+
+    size_t pageMarker = tail.find(" page ");
+    if (pageMarker != std::string::npos)
+    {
+        std::string countStr = tail.substr(0, pageMarker);
+        std::string pageStr = tail.substr(pageMarker + 6);
+
+        if (!TryParsePositiveUInt32(countStr, requestedCount) ||
+            !TryParsePositiveUInt32(pageStr, requestedPage))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    if (tail.rfind("page ", 0) == 0)
+    {
+        std::string pageStr = tail.substr(5);
+        return TryParsePositiveUInt32(pageStr, requestedPage);
+    }
+
+    return TryParsePositiveUInt32(tail, requestedCount);
+}
+
 static std::vector<std::string> SplitRawChatChunks(
     const std::string& text,
     size_t maxLength)
@@ -839,6 +920,30 @@ static const std::string& GetGuideLink()
     static const std::string guideLink =
         "|Hplayer:" + GUIDE_NAME + "|h|cFF66AAFF[Azeroth Guide]|h|r";
     return guideLink;
+}
+
+static void SendGuideTextBlock(
+    ChatHandler* handler,
+    Player* player,
+    const std::string& firstPrefix,
+    const std::string& continuationPrefix,
+    const std::string& normalizedText,
+    const std::string& emptyFallback)
+{
+    std::string text = normalizedText.empty() ? emptyFallback : normalizedText;
+
+    bool isFirstChunk = true;
+    for (const std::string& rawChunk :
+         SplitRawChatChunks(
+             text,
+             sLLMGuideConfig->GetMaxResponseLength()))
+    {
+        std::string line =
+            (isFirstChunk ? firstPrefix : continuationPrefix) +
+            ConvertGuideLinks(player, rawChunk);
+        handler->SendSysMessage(line.c_str());
+        isFirstChunk = false;
+    }
 }
 
 // Build character context string
@@ -1121,10 +1226,45 @@ static void PopulateHistoryEntryFromSummary(
         question = summary;
 }
 
-static bool ShowHistory(ChatHandler* handler, Player* player, uint32 requestedCount)
+static bool ShowHistory(
+    ChatHandler* handler,
+    Player* player,
+    uint32 requestedCount,
+    uint32 requestedPage)
 {
     uint32 count = std::min(std::max(requestedCount, 1u), MAX_HISTORY_COUNT);
     uint32 guid = player->GetGUID().GetCounter();
+    uint32 page = std::max(requestedPage, 1u);
+
+    QueryResult countResult = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM llm_guide_memory WHERE character_guid = {}",
+        guid);
+
+    uint32 totalCount = 0;
+    if (countResult)
+        totalCount = (*countResult)[0].Get<uint32>();
+
+    if (totalCount == 0)
+    {
+        handler->PSendSysMessage(
+            "{}: You don't have any saved conversation history yet.",
+            GetGuideLink());
+        return true;
+    }
+
+    uint32 totalPages = (totalCount + count - 1) / count;
+    if (page > totalPages)
+    {
+        handler->PSendSysMessage(
+            "{}: History page {} doesn't exist. "
+            "Use .ag history page 1-{}.",
+            GetGuideLink(),
+            page,
+            totalPages);
+        return true;
+    }
+
+    uint32 offset = (page - 1) * count;
 
     // Command handlers take the simple synchronous path for now. If this
     // becomes hot or latency-sensitive, revisit with an async query flow.
@@ -1133,25 +1273,40 @@ static bool ShowHistory(ChatHandler* handler, Player* player, uint32 requestedCo
         "FROM llm_guide_memory "
         "WHERE character_guid = {} "
         "ORDER BY created_at DESC "
-        "LIMIT {}",
+        "LIMIT {} OFFSET {}",
         guid,
-        count);
+        count,
+        offset);
 
     if (!result)
     {
         handler->PSendSysMessage(
-            "{}: You don't have any saved conversation history yet.",
+            "{}: Couldn't load that history page right now.",
             GetGuideLink());
         return true;
     }
 
-    uint64 rowCount = result->GetRowCount();
+    uint32 shownCount = static_cast<uint32>(result->GetRowCount());
+    uint32 firstIndex = offset + 1;
+    uint32 lastIndex = offset + shownCount;
     handler->PSendSysMessage(
-        "{}: Showing your last {} conversation(s).",
+        "{}: Showing conversations {}-{} of {} (page {}/{}).",
         GetGuideLink(),
-        rowCount);
+        firstIndex,
+        lastIndex,
+        totalCount,
+        page,
+        totalPages);
+    handler->SendSysMessage(
+        "|cFF66AAFFUse .ag show <number> to view a full interaction.|r");
+    if (page < totalPages)
+    {
+        handler->PSendSysMessage(
+            "|cFF66AAFFNext page: .ag history page {}|r",
+            page + 1);
+    }
 
-    uint32 index = 1;
+    uint32 index = firstIndex;
     do
     {
         Field* fields = result->Fetch();
@@ -1162,30 +1317,78 @@ static bool ShowHistory(ChatHandler* handler, Player* player, uint32 requestedCo
         PopulateHistoryEntryFromSummary(summary, question, response);
 
         std::string normalizedQuestion = NormalizeGuideText(question);
-        std::string normalizedResponse = NormalizeGuideText(response);
         normalizedQuestion = TruncateText(normalizedQuestion, 160);
-        normalizedResponse = TruncateText(normalizedResponse, 220);
 
         std::string formattedQuestion =
             ConvertGuideLinks(player, normalizedQuestion);
-        std::string formattedResponse =
-            ConvertGuideLinks(player, normalizedResponse);
 
         if (formattedQuestion.empty())
             formattedQuestion = "(empty question)";
-        if (formattedResponse.empty())
-            formattedResponse = "(empty response)";
 
         handler->PSendSysMessage(
-            "|cFF66AAFF[{}]|r |cFFFFFF00Q:|r {}",
+            "|cFF66AAFF{}.|r |cFFFFFF00Q:|r {}",
             index,
             formattedQuestion);
-        handler->PSendSysMessage(
-            "    |cFF66AAFFA:|r {}",
-            formattedResponse);
         ++index;
     } while (result->NextRow());
 
+    return true;
+}
+
+static bool ShowHistoryEntry(
+    ChatHandler* handler,
+    Player* player,
+    uint32 requestedIndex)
+{
+    uint32 guid = player->GetGUID().GetCounter();
+
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT summary, question, response "
+        "FROM llm_guide_memory "
+        "WHERE character_guid = {} "
+        "ORDER BY created_at DESC "
+        "LIMIT 1 OFFSET {}",
+        guid,
+        requestedIndex - 1);
+
+    if (!result)
+    {
+        handler->PSendSysMessage(
+            "{}: No saved conversation found at index {}. "
+            "Use .ag history to see available entries.",
+            GetGuideLink(),
+            requestedIndex);
+        return true;
+    }
+
+    Field* fields = result->Fetch();
+    std::string summary = fields[0].Get<std::string>();
+    std::string question = fields[1].Get<std::string>();
+    std::string response = fields[2].Get<std::string>();
+
+    PopulateHistoryEntryFromSummary(summary, question, response);
+
+    std::string normalizedQuestion = NormalizeGuideText(question);
+    std::string normalizedResponse = NormalizeGuideText(response);
+
+    handler->PSendSysMessage(
+        "{}: Showing conversation {}.",
+        GetGuideLink(),
+        requestedIndex);
+    SendGuideTextBlock(
+        handler,
+        player,
+        "|cFFFFFF00Q:|r ",
+        "   ",
+        normalizedQuestion,
+        "(empty question)");
+    SendGuideTextBlock(
+        handler,
+        player,
+        "|cFF66AAFFA:|r ",
+        "   ",
+        normalizedResponse,
+        "(empty response)");
     return true;
 }
 
@@ -1221,40 +1424,31 @@ static bool TryHandleAgAliasCommand(
     const std::string& questionStr)
 {
     std::string input = CollapseWhitespace(questionStr);
+    uint32 parsedCount = 0;
+    uint32 parsedPage = 0;
 
     if (input == "clear")
         return ClearHistory(handler, player);
 
-    if (input == "history")
-        return ShowHistory(handler, player, DEFAULT_HISTORY_COUNT);
-
-    constexpr char historyPrefix[] = "history ";
-    if (input.rfind(historyPrefix, 0) == 0)
+    if (TryParseHistoryArguments(input, parsedCount, parsedPage))
     {
-        std::string countStr = input.substr(sizeof(historyPrefix) - 1);
-        bool isDigitsOnly = !countStr.empty() && std::all_of(
-            countStr.begin(),
-            countStr.end(),
-            [](unsigned char ch) { return std::isdigit(ch) != 0; });
+        return ShowHistory(handler, player, parsedCount, parsedPage);
+    }
 
-        if (!isDigitsOnly)
+    if (input == "show")
+    {
+        handler->SendSysMessage("Usage: .ag show <number>");
+        return true;
+    }
+
+    std::string showTail;
+    if (SplitCommandTail(input, "show ", showTail))
+    {
+        uint32 parsedIndex = 0;
+        if (!TryParsePositiveUInt32(showTail, parsedIndex))
             return false;
 
-        try
-        {
-            unsigned long parsed = std::stoul(countStr);
-            if (parsed > 0 &&
-                parsed <= std::numeric_limits<uint32>::max())
-            {
-                return ShowHistory(
-                    handler,
-                    player,
-                    static_cast<uint32>(parsed));
-            }
-        }
-        catch (const std::exception&)
-        {
-        }
+        return ShowHistoryEntry(handler, player, parsedIndex);
     }
 
     return false;
