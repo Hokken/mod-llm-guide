@@ -860,6 +860,64 @@ class GameToolExecutor:
         self.player_y = y
         self.player_map = map_id
 
+    _DEFAULT_NPC_ORDER = "ORDER BY ct.name"
+
+    def _distance_order_params(
+        self, fallback=None
+    ):
+        """Return (sql_cols, order_clause,
+        select_params, order_params, distance_active)
+        for distance-based sorting.
+
+        When player position is available, adds computed
+        columns for same-map priority and squared
+        Euclidean distance, with the fallback as a
+        secondary sort for cross-map and tie-breaking.
+        Falls back to *fallback* (default: ORDER BY
+        ct.name) when position is unknown.
+
+        Returns a 5-tuple. Callers must place
+        select_params before WHERE params, and
+        order_params after WHERE params:
+          cursor.execute(sql,
+              (*select_params, *where_params,
+               *order_params))
+        """
+        if fallback is None:
+            fallback = self._DEFAULT_NPC_ORDER
+        secondary = fallback.replace(
+            "ORDER BY ", "", 1
+        )
+        if (self.player_x is not None
+                and self.player_y is not None
+                and self.player_map is not None):
+            cols = (
+                ", CASE WHEN c.map = %s THEN 0 "
+                "ELSE 1 END AS same_map"
+                ", (c.position_x - %s) "
+                "* (c.position_x - %s) "
+                "+ (c.position_y - %s) "
+                "* (c.position_y - %s) "
+                "AS dist_sq"
+            )
+            order = (
+                "ORDER BY same_map ASC, "
+                "CASE WHEN c.map = %s "
+                "THEN dist_sq END ASC, "
+                f"{secondary}"
+            )
+            select_params = (
+                self.player_map,
+                self.player_x,
+                self.player_x,
+                self.player_y,
+                self.player_y,
+            )
+            order_params = (self.player_map,)
+            return (cols, order, select_params,
+                    order_params, True)
+        return "", fallback, (), (), False
+
     def calculate_distance(self, target_x: float, target_y: float) -> float:
         """Calculate distance from player to target coordinates.
 
@@ -1061,20 +1119,24 @@ class GameToolExecutor:
 
         # Special case: "general" vendor (any vendor to sell junk to)
         if item_type in ('general', 'supplies', 'any', 'vendor', 'junk', 'sell'):
+            dist_cols, order, sel_params, \
+                ord_params, dist_active = \
+                self._distance_order_params()
             conn = self.get_connection()
             cursor = conn.cursor(dictionary=True)
             cursor.execute(f"""
                 SELECT DISTINCT ct.entry as vendor_entry, ct.name as vendor_name, ct.subname as title,
                        c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                        na.area_name
+                       {dist_cols}
                 FROM creature_template ct
                 JOIN creature c ON ct.entry = c.id1
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE (ct.subname LIKE '%Supplies%' OR ct.subname LIKE '%Goods%' OR ct.subname LIKE '%Merchant%')
                   AND ct.npcflag & 128 > 0 {zone_filter}
-                ORDER BY ct.name
+                {order}
                 LIMIT 5
-            """)
+            """, (*sel_params, *ord_params))
             vendors = cursor.fetchall()
             cursor.close()
             conn.close()
@@ -1082,11 +1144,14 @@ class GameToolExecutor:
             if not vendors:
                 return f"No general vendor found in {zone or 'the area'}."
 
-            result = f"General vendors in {zone or 'the area'}:\n"
+            hint = " (closest first)" if dist_active else ""
+            result = (
+                f"General vendors in "
+                f"{zone or 'the area'}{hint}:\n"
+            )
             for v in vendors:
                 npc_link = f"[[npc:{v['vendor_entry']}:{v['vendor_name']}]]"
                 title = f" ({v['title']})" if v['title'] else ""
-                # Add distance/direction if available
                 dist_info = self.format_distance_direction(v['pos_x'], v['pos_y'], v['map_id'])
                 dist_str = f" ({dist_info})" if dist_info else ""
                 loc = (f" in {v['area_name']}"
@@ -1113,7 +1178,16 @@ class GameToolExecutor:
         name_patterns = self.ITEM_NAME_MAP.get(item_type, [])
 
         if not class_filters and not name_patterns:
-            return f"Unknown item type: {item_type}. Try: general, arrows, food, drink, reagents, bags, potions, bandages."
+            # Fallback: search by vendor subname
+            # (e.g., "cooking supplies", "mining supplies",
+            #  "enchanting supplies")
+            return self._find_vendor_by_subname(
+                item_type, zone, zone_coords, zone_filter
+            )
+
+        dist_cols, order, sel_params, \
+            ord_params, dist_active = \
+            self._distance_order_params()
 
         conn = self.get_connection()
         cursor = conn.cursor(dictionary=True)
@@ -1126,6 +1200,7 @@ class GameToolExecutor:
                        GROUP_CONCAT(DISTINCT it.name ORDER BY it.name SEPARATOR ', ') as items,
                        c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                        na.area_name
+                       {dist_cols}
                 FROM npc_vendor nv
                 JOIN creature_template ct ON nv.entry = ct.entry
                 JOIN creature c ON ct.entry = c.id1
@@ -1133,8 +1208,9 @@ class GameToolExecutor:
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE ({' OR '.join(conditions)}) {zone_filter}
                 GROUP BY ct.entry, c.position_x, c.position_y, c.map
+                {order}
                 LIMIT 5
-            """)
+            """, (*sel_params, *ord_params))
             vendors = cursor.fetchall()
 
         if not vendors and name_patterns:
@@ -1144,6 +1220,7 @@ class GameToolExecutor:
                        GROUP_CONCAT(DISTINCT it.name ORDER BY it.name SEPARATOR ', ') as items,
                        c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                        na.area_name
+                       {dist_cols}
                 FROM npc_vendor nv
                 JOIN creature_template ct ON nv.entry = ct.entry
                 JOIN creature c ON ct.entry = c.id1
@@ -1151,8 +1228,9 @@ class GameToolExecutor:
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE ({placeholders}) {zone_filter}
                 GROUP BY ct.entry, c.position_x, c.position_y, c.map
+                {order}
                 LIMIT 5
-            """, [f"%{p}%" for p in name_patterns])
+            """, (*sel_params, *[f"%{p}%" for p in name_patterns], *ord_params))
             vendors = cursor.fetchall()
 
         cursor.close()
@@ -1161,7 +1239,8 @@ class GameToolExecutor:
         if not vendors:
             return f"No vendors selling {item_type} found in {zone or 'the world'}."
 
-        result = f"Vendors selling {item_type} in {zone or 'the world'}:\n"
+        hint = " (closest first)" if dist_active else ""
+        result = f"Vendors selling {item_type} in {zone or 'the world'}{hint}:\n"
         for v in vendors:
             title = f" ({v['title']})" if v['title'] else ""
             items = v['items'][:80] + "..." if len(v['items']) > 80 else v['items']
@@ -1185,6 +1264,9 @@ class GameToolExecutor:
             return f"Unknown trainer type: {trainer_type}. Try: hunter, warrior, mage, leatherworking, mining, cooking, etc."
 
         zone_coords, zone_filter = self._get_zone_filter(zone)
+        dist_cols, order, sel_params, \
+            ord_params, dist_active = \
+            self._distance_order_params()
 
         conn = self.get_connection()
         cursor = conn.cursor(dictionary=True)
@@ -1193,13 +1275,14 @@ class GameToolExecutor:
             SELECT DISTINCT ct.entry as trainer_entry, ct.name as trainer_name, ct.subname as title,
                    c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                    na.area_name
+                   {dist_cols}
             FROM creature_template ct
             JOIN creature c ON ct.entry = c.id1
             LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.subname LIKE %s AND ct.npcflag & 16 > 0 {zone_filter}
-            ORDER BY ct.name
+            {order}
             LIMIT 5
-        """, (pattern,))
+        """, (*sel_params, pattern, *ord_params))
 
         trainers = cursor.fetchall()
         cursor.close()
@@ -1208,7 +1291,8 @@ class GameToolExecutor:
         if not trainers:
             return f"No {trainer_type} trainer found in {zone or 'the world'}."
 
-        result = f"{trainer_type.title()} trainers in {zone or 'the world'}:\n"
+        hint = " (closest first)" if dist_active else ""
+        result = f"{trainer_type.title()} trainers in {zone or 'the world'}{hint}:\n"
         for t in trainers:
             npc_link = f"[[npc:{t['trainer_entry']}:{t['trainer_name']}]]"
             # Add distance/direction if available
@@ -1235,6 +1319,9 @@ class GameToolExecutor:
             return f"Unknown service: {service_type}. Try: stable master, innkeeper, flight master, banker, auctioneer."
 
         zone_coords, zone_filter = self._get_zone_filter(zone)
+        dist_cols, order, sel_params, \
+            ord_params, dist_active = \
+            self._distance_order_params()
 
         conn = self.get_connection()
         cursor = conn.cursor(dictionary=True)
@@ -1243,12 +1330,14 @@ class GameToolExecutor:
             SELECT DISTINCT ct.entry as npc_entry, ct.name as npc_name, ct.subname as title,
                    c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                    na.area_name
+                   {dist_cols}
             FROM creature_template ct
             JOIN creature c ON ct.entry = c.id1
             LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.subname LIKE %s {zone_filter}
+            {order}
             LIMIT 5
-        """, (pattern,))
+        """, (*sel_params, pattern, *ord_params))
 
         npcs = cursor.fetchall()
         cursor.close()
@@ -1257,7 +1346,8 @@ class GameToolExecutor:
         if not npcs:
             return f"No {service_type} found in {zone or 'the world'}."
 
-        result = f"{service_type.title()} in {zone or 'the world'}:\n"
+        hint = " (closest first)" if dist_active else ""
+        result = f"{service_type.title()} in {zone or 'the world'}{hint}:\n"
         for n in npcs:
             # Add distance/direction if available
             dist_info = self.format_distance_direction(n['pos_x'], n['pos_y'], n['map_id'])
@@ -1283,6 +1373,9 @@ class GameToolExecutor:
             return "Please specify an NPC name to search for."
 
         zone_coords, zone_filter = self._get_zone_filter(zone) if zone else (None, "")
+        dist_cols, order, sel_params, \
+            ord_params, dist_active = \
+            self._distance_order_params()
 
         conn = self.get_connection()
         cursor = conn.cursor(dictionary=True)
@@ -1291,12 +1384,14 @@ class GameToolExecutor:
             SELECT DISTINCT ct.entry as npc_entry, ct.name as npc_name, ct.subname as title,
                    c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                    na.area_name
+                   {dist_cols}
             FROM creature_template ct
             JOIN creature c ON ct.entry = c.id1
             LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.name LIKE %s {zone_filter}
+            {order}
             LIMIT 5
-        """, (f"%{npc_name}%",))
+        """, (*sel_params, f"%{npc_name}%", *ord_params))
 
         npcs = cursor.fetchall()
         cursor.close()
@@ -1305,7 +1400,8 @@ class GameToolExecutor:
         if not npcs:
             return f"No NPC named '{npc_name}' found{' in ' + zone if zone else ''}."
 
-        result = f"Found NPC(s) matching '{npc_name}':\n"
+        hint = " (closest first)" if dist_active else ""
+        result = f"Found NPC(s) matching '{npc_name}'{hint}:\n"
         for n in npcs:
             title = f" ({n['title']})" if n['title'] else ""
             # Add distance/direction if available
@@ -1455,36 +1551,45 @@ class GameToolExecutor:
         cursor = conn.cursor(dictionary=True)
 
         if quest_name:
-            # Find specific quest giver (with position for distance)
-            cursor.execute("""
+            dist_cols, order, sel_params, \
+                ord_params, dist_active = \
+                self._distance_order_params()
+            cursor.execute(f"""
                 SELECT ct.entry as npc_entry, ct.name as npc_name, qt.ID as quest_id,
                        qt.LogTitle as quest_title, qt.QuestLevel,
                        c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                        na.area_name
+                       {dist_cols}
                 FROM quest_template qt
                 JOIN creature_queststarter cq ON qt.ID = cq.quest
                 JOIN creature_template ct ON cq.id = ct.entry
                 JOIN creature c ON ct.entry = c.id1
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE qt.LogTitle LIKE %s
+                {order}
                 LIMIT 5
-            """, (f"%{quest_name}%",))
+            """, (*sel_params, f"%{quest_name}%", *ord_params))
         else:
-            # Find quest givers in zone
+            dist_cols, order, sel_params, \
+                ord_params, dist_active = \
+                self._distance_order_params(
+                    fallback="ORDER BY quest_count DESC"
+                )
             zone_coords, zone_filter = self._get_zone_filter(zone) if zone else (None, "")
             cursor.execute(f"""
                 SELECT ct.entry as npc_entry, ct.name as npc_name, COUNT(DISTINCT cq.quest) as quest_count,
                        c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                        na.area_name
+                       {dist_cols}
                 FROM creature_template ct
                 JOIN creature c ON ct.entry = c.id1
                 JOIN creature_queststarter cq ON ct.entry = cq.id
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE 1=1 {zone_filter}
                 GROUP BY ct.entry, c.position_x, c.position_y, c.map
-                ORDER BY quest_count DESC
+                {order}
                 LIMIT 10
-            """)
+            """, (*sel_params, *ord_params))
 
         results = cursor.fetchall()
         cursor.close()
@@ -1493,8 +1598,9 @@ class GameToolExecutor:
         if not results:
             return f"No quest givers found{' for ' + quest_name if quest_name else ' in ' + zone if zone else ''}."
 
+        hint = " (closest first)" if dist_active else ""
         if quest_name:
-            result = f"Quest '{quest_name}' is given by:\n"
+            result = f"Quest '{quest_name}' is given by{hint}:\n"
             for r in results:
                 # Use both NPC and quest link markers
                 npc_link = f"[[npc:{r['npc_entry']}:{r['npc_name']}]]"
@@ -1507,7 +1613,7 @@ class GameToolExecutor:
                 result += f"- {npc_link}{loc}{dist_str} (Quest: {quest_link})\n"
             result += "\nIMPORTANT: Include all [[...]] markers exactly as shown - they become clickable links!"
         else:
-            result = f"Quest givers in {zone or 'the world'}:\n"
+            result = f"Quest givers in {zone or 'the world'}{hint}:\n"
             for r in results:
                 npc_link = f"[[npc:{r['npc_entry']}:{r['npc_name']}]]"
                 # Add distance/direction if available
