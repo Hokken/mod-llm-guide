@@ -3,6 +3,7 @@ Game data tools for Claude tool use.
 Defines tools that Claude can call to query the WoW database.
 """
 
+import difflib
 import logging
 from typing import Any
 from zone_coordinates import get_zone_coordinates, get_zone_id, world_to_map_coords, ZONE_COORDINATES
@@ -842,6 +843,48 @@ class GameToolExecutor:
     # 1 WoW unit = 1 yard = 0.9144 meters
     YARD_TO_METER = 0.9144
 
+    @staticmethod
+    def _fuzzy_dict_match(
+        user_input, lookup_dict, threshold=0.6
+    ):
+        """Tiered fuzzy match against dict keys.
+
+        Returns (matched_key, value) or (None, None).
+        Tier 1: exact key match
+        Tier 2: substring (input in key or key in
+                input), prefer shortest key
+        Tier 3: difflib close match (typo tolerance)
+        """
+        if user_input in lookup_dict:
+            return (
+                user_input,
+                lookup_dict[user_input],
+            )
+
+        words = user_input.split()
+        candidates = [
+            k for k in lookup_dict
+            if k in words or any(
+                w.startswith(k) for w in words
+            )
+        ]
+        if candidates:
+            best = max(candidates, key=len)
+            return best, lookup_dict[best]
+
+        matches = difflib.get_close_matches(
+            user_input, lookup_dict.keys(),
+            n=1, cutoff=threshold,
+        )
+        if matches:
+            match = matches[0]
+            shorter = min(len(user_input), len(match))
+            longer = max(len(user_input), len(match))
+            if shorter >= 3 and longer <= shorter * 2:
+                return match, lookup_dict[match]
+
+        return None, None
+
     def __init__(self, db_config: dict):
         self.db_config = db_config
         self.default_zone = None  # Player's current zone, set before processing
@@ -1157,30 +1200,40 @@ class GameToolExecutor:
                 loc = (f" in {v['area_name']}"
                        if v.get('area_name') else "")
                 coords = ""
-                if zone_coords and v['pos_x'] and v['pos_y']:
-                    map_coords = world_to_map_coords(zone, v['pos_x'], v['pos_y'])
+                coord_zone = zone if zone_coords else self.default_zone
+                if coord_zone and v['pos_x'] and v['pos_y']:
+                    map_coords = world_to_map_coords(coord_zone, v['pos_x'], v['pos_y'])
                     if map_coords:
                         coords = f" at {map_coords[0]}, {map_coords[1]}"
                 result += f"- {npc_link}{title}{loc}{dist_str}{coords}\n"
             result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
             return result
 
-        # Get item class/subclass
+        # "X supplies" queries go directly to subname
+        # search — fuzzy item matching would match wrong
+        # keys (e.g., "mining supplies" → "mining pick")
+        if "supplies" in item_type:
+            return self._find_vendor_by_subname(
+                item_type, zone, zone_coords, zone_filter
+            )
+
         class_filters = []
-        if item_type in self.ITEM_CLASS_MAP:
-            class_info = self.ITEM_CLASS_MAP[item_type]
+        _, class_info = self._fuzzy_dict_match(
+            item_type, self.ITEM_CLASS_MAP
+        )
+        if class_info is not None:
             if isinstance(class_info, list):
                 class_filters = class_info
             else:
                 class_filters = [class_info]
 
-        # Check name patterns
-        name_patterns = self.ITEM_NAME_MAP.get(item_type, [])
+        _, name_patterns = self._fuzzy_dict_match(
+            item_type, self.ITEM_NAME_MAP
+        )
+        if not name_patterns:
+            name_patterns = []
 
         if not class_filters and not name_patterns:
-            # Fallback: search by vendor subname
-            # (e.g., "cooking supplies", "mining supplies",
-            #  "enchanting supplies")
             return self._find_vendor_by_subname(
                 item_type, zone, zone_coords, zone_filter
             )
@@ -1207,7 +1260,7 @@ class GameToolExecutor:
                 JOIN item_template it ON nv.item = it.entry
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE ({' OR '.join(conditions)}) {zone_filter}
-                GROUP BY ct.entry, c.position_x, c.position_y, c.map
+                GROUP BY ct.entry, c.position_x, c.position_y, c.map, na.area_name
                 {order}
                 LIMIT 5
             """, (*sel_params, *ord_params))
@@ -1227,7 +1280,7 @@ class GameToolExecutor:
                 JOIN item_template it ON nv.item = it.entry
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE ({placeholders}) {zone_filter}
-                GROUP BY ct.entry, c.position_x, c.position_y, c.map
+                GROUP BY ct.entry, c.position_x, c.position_y, c.map, na.area_name
                 {order}
                 LIMIT 5
             """, (*sel_params, *[f"%{p}%" for p in name_patterns], *ord_params))
@@ -1237,7 +1290,10 @@ class GameToolExecutor:
         conn.close()
 
         if not vendors:
-            return f"No vendors selling {item_type} found in {zone or 'the world'}."
+            return self._find_vendor_by_subname(
+                item_type, zone, zone_coords,
+                zone_filter
+            )
 
         hint = " (closest first)" if dist_active else ""
         result = f"Vendors selling {item_type} in {zone or 'the world'}{hint}:\n"
@@ -1245,13 +1301,129 @@ class GameToolExecutor:
             title = f" ({v['title']})" if v['title'] else ""
             items = v['items'][:80] + "..." if len(v['items']) > 80 else v['items']
             npc_link = f"[[npc:{v['vendor_entry']}:{v['vendor_name']}]]"
-            # Add distance/direction if available
+
             dist_info = self.format_distance_direction(v['pos_x'], v['pos_y'], v['map_id'])
             dist_str = f" ({dist_info})" if dist_info else ""
             loc = (f" in {v['area_name']}"
                    if v.get('area_name') else "")
-            result += f"- {npc_link}{title}{loc}{dist_str}: {items}\n"
+            coords = ""
+            coord_zone = zone if zone_coords else self.default_zone
+            if coord_zone and v['pos_x'] and v['pos_y']:
+                map_coords = world_to_map_coords(
+                    coord_zone, v['pos_x'], v['pos_y']
+                )
+                if map_coords:
+                    coords = (
+                        f" at {map_coords[0]}, "
+                        f"{map_coords[1]}"
+                    )
+            result += f"- {npc_link}{title}{loc}{dist_str}{coords}: {items}\n"
         result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
+        return result
+
+    def _find_vendor_by_subname(
+        self, item_type, zone, zone_coords, zone_filter
+    ):
+        """Find vendors by creature_template.subname.
+
+        Fallback for item types not in ITEM_CLASS_MAP or
+        ITEM_NAME_MAP. Catches "cooking supplies",
+        "mining supplies", "enchanting supplies", etc.
+        """
+        dist_cols, order, sel_params, \
+            ord_params, dist_active = \
+            self._distance_order_params()
+
+        conn = self.get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(f"""
+            SELECT DISTINCT
+                ct.entry as vendor_entry,
+                ct.name as vendor_name,
+                ct.subname as title,
+                c.position_x as pos_x,
+                c.position_y as pos_y,
+                c.map as map_id,
+                na.area_name,
+                na.zone_name as npc_zone
+                {dist_cols}
+            FROM creature_template ct
+            JOIN creature c ON ct.entry = c.id1
+            LEFT JOIN llm_guide_npc_areas na
+                ON na.creature_guid = c.guid
+            WHERE ct.subname LIKE %s
+              AND ct.npcflag & 128 > 0
+              {zone_filter}
+            {order}
+            LIMIT 5
+        """, (*sel_params, f"%{item_type}%",
+              *ord_params))
+        vendors = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        if not vendors:
+            return (
+                f"No vendors for '{item_type}' "
+                f"found in "
+                f"{zone or 'the world'}."
+            )
+
+        hint = (
+            " (closest first)"
+            if dist_active else ""
+        )
+        result = (
+            f"Vendors for {item_type} in "
+            f"{zone or 'the world'}{hint}:\n"
+        )
+        for v in vendors:
+            npc_link = (
+                f"[[npc:{v['vendor_entry']}"
+                f":{v['vendor_name']}]]"
+            )
+            title = (
+                f" ({v['title']})"
+                if v['title'] else ""
+            )
+            dist_info = (
+                self.format_distance_direction(
+                    v['pos_x'], v['pos_y'],
+                    v['map_id'])
+            )
+            dist_str = (
+                f" ({dist_info})"
+                if dist_info else ""
+            )
+            loc = (
+                f" in {v['area_name']}"
+                if v.get('area_name') else ""
+            )
+            coords = ""
+            if v['pos_x'] and v['pos_y']:
+                coord_zone = (
+                    zone if zone_coords
+                    else v.get('npc_zone', '')
+                )
+                if coord_zone:
+                    map_coords = world_to_map_coords(
+                        coord_zone,
+                        v['pos_x'], v['pos_y']
+                    )
+                    if map_coords:
+                        coords = (
+                            f" at {map_coords[0]}"
+                            f", {map_coords[1]}"
+                        )
+            result += (
+                f"- {npc_link}{title}"
+                f"{loc}{dist_str}{coords}\n"
+            )
+        result += (
+            "\nIMPORTANT: Include the [[npc:...]] "
+            "markers exactly as shown - they "
+            "become colored NPC links!"
+        )
         return result
 
     def _find_trainer(self, params: dict) -> str:
@@ -1259,7 +1431,9 @@ class GameToolExecutor:
         trainer_type = params.get("trainer_type", "").lower()
         zone = params.get("zone", "").lower()
 
-        pattern = self.TRAINER_PATTERNS.get(trainer_type)
+        _, pattern = self._fuzzy_dict_match(
+            trainer_type, self.TRAINER_PATTERNS
+        )
         if not pattern:
             return f"Unknown trainer type: {trainer_type}. Try: hunter, warrior, mage, leatherworking, mining, cooking, etc."
 
@@ -1295,14 +1469,15 @@ class GameToolExecutor:
         result = f"{trainer_type.title()} trainers in {zone or 'the world'}{hint}:\n"
         for t in trainers:
             npc_link = f"[[npc:{t['trainer_entry']}:{t['trainer_name']}]]"
-            # Add distance/direction if available
+
             dist_info = self.format_distance_direction(t['pos_x'], t['pos_y'], t['map_id'])
             dist_str = f" ({dist_info})" if dist_info else ""
             loc = (f" in {t['area_name']}"
                    if t.get('area_name') else "")
             coords = ""
-            if zone_coords and t['pos_x'] and t['pos_y']:
-                map_coords = world_to_map_coords(zone, round(t['pos_x'], 1), round(t['pos_y'], 1))
+            coord_zone = zone if zone_coords else self.default_zone
+            if coord_zone and t['pos_x'] and t['pos_y']:
+                map_coords = world_to_map_coords(coord_zone, round(t['pos_x'], 1), round(t['pos_y'], 1))
                 if map_coords:
                     coords = f" at {map_coords[0]}, {map_coords[1]}"
             result += f"- {npc_link} ({t['title']}){loc}{dist_str}{coords}\n"
@@ -1314,7 +1489,9 @@ class GameToolExecutor:
         service_type = params.get("service_type", "").lower()
         zone = params.get("zone", "").lower()
 
-        pattern = self.SERVICE_PATTERNS.get(service_type)
+        _, pattern = self._fuzzy_dict_match(
+            service_type, self.SERVICE_PATTERNS
+        )
         if not pattern:
             return f"Unknown service: {service_type}. Try: stable master, innkeeper, flight master, banker, auctioneer."
 
@@ -1349,14 +1526,15 @@ class GameToolExecutor:
         hint = " (closest first)" if dist_active else ""
         result = f"{service_type.title()} in {zone or 'the world'}{hint}:\n"
         for n in npcs:
-            # Add distance/direction if available
+
             dist_info = self.format_distance_direction(n['pos_x'], n['pos_y'], n['map_id'])
             dist_str = f" ({dist_info})" if dist_info else ""
             loc = (f" in {n['area_name']}"
                    if n.get('area_name') else "")
             coords = ""
-            if zone_coords and n['pos_x'] and n['pos_y']:
-                map_coords = world_to_map_coords(zone, round(n['pos_x'], 1), round(n['pos_y'], 1))
+            coord_zone = zone if zone_coords else self.default_zone
+            if coord_zone and n['pos_x'] and n['pos_y']:
+                map_coords = world_to_map_coords(coord_zone, round(n['pos_x'], 1), round(n['pos_y'], 1))
                 if map_coords:
                     coords = f" at {map_coords[0]}, {map_coords[1]}"
             npc_link = f"[[npc:{n['npc_entry']}:{n['npc_name']}]]"
@@ -1404,14 +1582,15 @@ class GameToolExecutor:
         result = f"Found NPC(s) matching '{npc_name}'{hint}:\n"
         for n in npcs:
             title = f" ({n['title']})" if n['title'] else ""
-            # Add distance/direction if available
+
             dist_info = self.format_distance_direction(n['pos_x'], n['pos_y'], n['map_id'])
             dist_str = f" ({dist_info})" if dist_info else ""
             loc = (f" in {n['area_name']}"
                    if n.get('area_name') else "")
             coords = ""
-            if zone_coords and n['pos_x'] and n['pos_y']:
-                map_coords = world_to_map_coords(zone, round(n['pos_x'], 1), round(n['pos_y'], 1))
+            coord_zone = zone if zone_coords else self.default_zone
+            if coord_zone and n['pos_x'] and n['pos_y']:
+                map_coords = world_to_map_coords(coord_zone, round(n['pos_x'], 1), round(n['pos_y'], 1))
                 if map_coords:
                     coords = f" at {map_coords[0]}, {map_coords[1]}"
             npc_link = f"[[npc:{n['npc_entry']}:{n['npc_name']}]]"
@@ -1424,14 +1603,14 @@ class GameToolExecutor:
         spell_name = params.get("spell_name", "").lower()
         player_class = params.get("player_class", "").lower()
 
-        spell_id = self.SPELL_MAP.get(spell_name)
-        if not spell_id:
-            # Try partial match
-            for name, sid in self.SPELL_MAP.items():
-                if spell_name in name or name in spell_name:
-                    spell_id = sid
-                    spell_name = name
-                    break
+        matched_spell, spell_id = (
+            self._fuzzy_dict_match(
+                spell_name, self.SPELL_MAP,
+                threshold=0.8,
+            )
+        )
+        if matched_spell:
+            spell_name = matched_spell
 
         if not spell_id:
             return f"Spell '{spell_name}' not found in database. This might be a talent or special ability."
@@ -1586,7 +1765,7 @@ class GameToolExecutor:
                 JOIN creature_queststarter cq ON ct.entry = cq.id
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE 1=1 {zone_filter}
-                GROUP BY ct.entry, c.position_x, c.position_y, c.map
+                GROUP BY ct.entry, c.position_x, c.position_y, c.map, na.area_name
                 {order}
                 LIMIT 10
             """, (*sel_params, *ord_params))
@@ -1605,23 +1784,54 @@ class GameToolExecutor:
                 # Use both NPC and quest link markers
                 npc_link = f"[[npc:{r['npc_entry']}:{r['npc_name']}]]"
                 quest_link = f"[[quest:{r['quest_id']}:{r['quest_title']}:{r['QuestLevel']}]]"
-                # Add distance/direction if available
+    
                 dist_info = self.format_distance_direction(r['pos_x'], r['pos_y'], r['map_id'])
                 dist_str = f" ({dist_info})" if dist_info else ""
                 loc = (f" in {r['area_name']}"
                        if r.get('area_name') else "")
-                result += f"- {npc_link}{loc}{dist_str} (Quest: {quest_link})\n"
+                coords = ""
+                coord_zone = (
+                    zone or self.default_zone
+                )
+                if (coord_zone and r['pos_x']
+                        and r['pos_y']):
+                    map_coords = world_to_map_coords(
+                        coord_zone, r['pos_x'],
+                        r['pos_y']
+                    )
+                    if map_coords:
+                        coords = (
+                            f" at {map_coords[0]}"
+                            f", {map_coords[1]}"
+                        )
+                result += f"- {npc_link}{loc}{dist_str}{coords} (Quest: {quest_link})\n"
             result += "\nIMPORTANT: Include all [[...]] markers exactly as shown - they become clickable links!"
         else:
             result = f"Quest givers in {zone or 'the world'}{hint}:\n"
             for r in results:
                 npc_link = f"[[npc:{r['npc_entry']}:{r['npc_name']}]]"
-                # Add distance/direction if available
+
                 dist_info = self.format_distance_direction(r['pos_x'], r['pos_y'], r['map_id'])
                 dist_str = f" ({dist_info})" if dist_info else ""
                 loc = (f" in {r['area_name']}"
                        if r.get('area_name') else "")
-                result += f"- {npc_link}{loc}{dist_str} ({r['quest_count']} quests)\n"
+                coords = ""
+                coord_zone = (
+                    zone if zone_coords
+                    else self.default_zone
+                )
+                if (coord_zone and r['pos_x']
+                        and r['pos_y']):
+                    map_coords = world_to_map_coords(
+                        coord_zone, r['pos_x'],
+                        r['pos_y']
+                    )
+                    if map_coords:
+                        coords = (
+                            f" at {map_coords[0]}"
+                            f", {map_coords[1]}"
+                        )
+                result += f"- {npc_link}{loc}{dist_str}{coords} ({r['quest_count']} quests)\n"
         return result
 
     def _get_available_quests(self, params: dict) -> str:
