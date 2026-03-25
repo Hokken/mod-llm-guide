@@ -579,7 +579,8 @@ class GameToolExecutor:
         'tailoring': '%Tailor%', 'engineering': '%Engineer%',
         'alchemy': '%Alchem%', 'enchanting': '%Enchant%',
         'mining': '%Mining%', 'herbalism': '%Herb%', 'skinning': '%Skinning%',
-        'cooking': '%Cooking%', 'fishing': '%Fishing%', 'first aid': '%First Aid%',
+        'cooking': '%Cook%', 'cook': '%Cook%',
+        'fishing': '%Fishing%', 'first aid': '%First Aid%',
         'inscription': '%Inscription%', 'jewelcrafting': '%Jewel%',
         'riding': '%Riding%', 'pet': '%Pet%',
     }
@@ -1064,9 +1065,11 @@ class GameToolExecutor:
             cursor = conn.cursor(dictionary=True)
             cursor.execute(f"""
                 SELECT DISTINCT ct.entry as vendor_entry, ct.name as vendor_name, ct.subname as title,
-                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id
+                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
+                       na.area_name
                 FROM creature_template ct
                 JOIN creature c ON ct.entry = c.id1
+                LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE (ct.subname LIKE '%Supplies%' OR ct.subname LIKE '%Goods%' OR ct.subname LIKE '%Merchant%')
                   AND ct.npcflag & 128 > 0 {zone_filter}
                 ORDER BY ct.name
@@ -1086,12 +1089,14 @@ class GameToolExecutor:
                 # Add distance/direction if available
                 dist_info = self.format_distance_direction(v['pos_x'], v['pos_y'], v['map_id'])
                 dist_str = f" ({dist_info})" if dist_info else ""
+                loc = (f" in {v['area_name']}"
+                       if v.get('area_name') else "")
                 coords = ""
                 if zone_coords and v['pos_x'] and v['pos_y']:
                     map_coords = world_to_map_coords(zone, v['pos_x'], v['pos_y'])
                     if map_coords:
                         coords = f" at {map_coords[0]}, {map_coords[1]}"
-                result += f"- {npc_link}{title}{dist_str}{coords}\n"
+                result += f"- {npc_link}{title}{loc}{dist_str}{coords}\n"
             result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
             return result
 
@@ -1119,11 +1124,13 @@ class GameToolExecutor:
             cursor.execute(f"""
                 SELECT DISTINCT ct.entry as vendor_entry, ct.name as vendor_name, ct.subname as title,
                        GROUP_CONCAT(DISTINCT it.name ORDER BY it.name SEPARATOR ', ') as items,
-                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id
+                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
+                       na.area_name
                 FROM npc_vendor nv
                 JOIN creature_template ct ON nv.entry = ct.entry
                 JOIN creature c ON ct.entry = c.id1
                 JOIN item_template it ON nv.item = it.entry
+                LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE ({' OR '.join(conditions)}) {zone_filter}
                 GROUP BY ct.entry, c.position_x, c.position_y, c.map
                 LIMIT 5
@@ -1135,11 +1142,13 @@ class GameToolExecutor:
             cursor.execute(f"""
                 SELECT DISTINCT ct.entry as vendor_entry, ct.name as vendor_name, ct.subname as title,
                        GROUP_CONCAT(DISTINCT it.name ORDER BY it.name SEPARATOR ', ') as items,
-                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id
+                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
+                       na.area_name
                 FROM npc_vendor nv
                 JOIN creature_template ct ON nv.entry = ct.entry
                 JOIN creature c ON ct.entry = c.id1
                 JOIN item_template it ON nv.item = it.entry
+                LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE ({placeholders}) {zone_filter}
                 GROUP BY ct.entry, c.position_x, c.position_y, c.map
                 LIMIT 5
@@ -1160,7 +1169,9 @@ class GameToolExecutor:
             # Add distance/direction if available
             dist_info = self.format_distance_direction(v['pos_x'], v['pos_y'], v['map_id'])
             dist_str = f" ({dist_info})" if dist_info else ""
-            result += f"- {npc_link}{title}{dist_str}: {items}\n"
+            loc = (f" in {v['area_name']}"
+                   if v.get('area_name') else "")
+            result += f"- {npc_link}{title}{loc}{dist_str}: {items}\n"
         result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
         return result
 
@@ -1180,9 +1191,11 @@ class GameToolExecutor:
 
         cursor.execute(f"""
             SELECT DISTINCT ct.entry as trainer_entry, ct.name as trainer_name, ct.subname as title,
-                   c.position_x as pos_x, c.position_y as pos_y, c.map as map_id
+                   c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
+                   na.area_name
             FROM creature_template ct
             JOIN creature c ON ct.entry = c.id1
+            LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.subname LIKE %s AND ct.npcflag & 16 > 0 {zone_filter}
             ORDER BY ct.name
             LIMIT 5
@@ -1201,12 +1214,14 @@ class GameToolExecutor:
             # Add distance/direction if available
             dist_info = self.format_distance_direction(t['pos_x'], t['pos_y'], t['map_id'])
             dist_str = f" ({dist_info})" if dist_info else ""
+            loc = (f" in {t['area_name']}"
+                   if t.get('area_name') else "")
             coords = ""
             if zone_coords and t['pos_x'] and t['pos_y']:
                 map_coords = world_to_map_coords(zone, round(t['pos_x'], 1), round(t['pos_y'], 1))
                 if map_coords:
                     coords = f" at {map_coords[0]}, {map_coords[1]}"
-            result += f"- {npc_link} ({t['title']}){dist_str}{coords}\n"
+            result += f"- {npc_link} ({t['title']}){loc}{dist_str}{coords}\n"
         result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
         return result
 
@@ -1226,9 +1241,11 @@ class GameToolExecutor:
 
         cursor.execute(f"""
             SELECT DISTINCT ct.entry as npc_entry, ct.name as npc_name, ct.subname as title,
-                   c.position_x as pos_x, c.position_y as pos_y, c.map as map_id
+                   c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
+                   na.area_name
             FROM creature_template ct
             JOIN creature c ON ct.entry = c.id1
+            LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.subname LIKE %s {zone_filter}
             LIMIT 5
         """, (pattern,))
@@ -1245,13 +1262,15 @@ class GameToolExecutor:
             # Add distance/direction if available
             dist_info = self.format_distance_direction(n['pos_x'], n['pos_y'], n['map_id'])
             dist_str = f" ({dist_info})" if dist_info else ""
+            loc = (f" in {n['area_name']}"
+                   if n.get('area_name') else "")
             coords = ""
             if zone_coords and n['pos_x'] and n['pos_y']:
                 map_coords = world_to_map_coords(zone, round(n['pos_x'], 1), round(n['pos_y'], 1))
                 if map_coords:
                     coords = f" at {map_coords[0]}, {map_coords[1]}"
             npc_link = f"[[npc:{n['npc_entry']}:{n['npc_name']}]]"
-            result += f"- {npc_link}{dist_str}{coords}\n"
+            result += f"- {npc_link}{loc}{dist_str}{coords}\n"
         result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
         return result
 
@@ -1270,9 +1289,11 @@ class GameToolExecutor:
 
         cursor.execute(f"""
             SELECT DISTINCT ct.entry as npc_entry, ct.name as npc_name, ct.subname as title,
-                   c.position_x as pos_x, c.position_y as pos_y, c.map as map_id
+                   c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
+                   na.area_name
             FROM creature_template ct
             JOIN creature c ON ct.entry = c.id1
+            LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.name LIKE %s {zone_filter}
             LIMIT 5
         """, (f"%{npc_name}%",))
@@ -1290,13 +1311,15 @@ class GameToolExecutor:
             # Add distance/direction if available
             dist_info = self.format_distance_direction(n['pos_x'], n['pos_y'], n['map_id'])
             dist_str = f" ({dist_info})" if dist_info else ""
+            loc = (f" in {n['area_name']}"
+                   if n.get('area_name') else "")
             coords = ""
             if zone_coords and n['pos_x'] and n['pos_y']:
                 map_coords = world_to_map_coords(zone, round(n['pos_x'], 1), round(n['pos_y'], 1))
                 if map_coords:
                     coords = f" at {map_coords[0]}, {map_coords[1]}"
             npc_link = f"[[npc:{n['npc_entry']}:{n['npc_name']}]]"
-            result += f"- {npc_link}{title}{dist_str}{coords}\n"
+            result += f"- {npc_link}{title}{loc}{dist_str}{coords}\n"
         result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
         return result
 
@@ -1436,11 +1459,13 @@ class GameToolExecutor:
             cursor.execute("""
                 SELECT ct.entry as npc_entry, ct.name as npc_name, qt.ID as quest_id,
                        qt.LogTitle as quest_title, qt.QuestLevel,
-                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id
+                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
+                       na.area_name
                 FROM quest_template qt
                 JOIN creature_queststarter cq ON qt.ID = cq.quest
                 JOIN creature_template ct ON cq.id = ct.entry
                 JOIN creature c ON ct.entry = c.id1
+                LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE qt.LogTitle LIKE %s
                 LIMIT 5
             """, (f"%{quest_name}%",))
@@ -1449,10 +1474,12 @@ class GameToolExecutor:
             zone_coords, zone_filter = self._get_zone_filter(zone) if zone else (None, "")
             cursor.execute(f"""
                 SELECT ct.entry as npc_entry, ct.name as npc_name, COUNT(DISTINCT cq.quest) as quest_count,
-                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id
+                       c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
+                       na.area_name
                 FROM creature_template ct
                 JOIN creature c ON ct.entry = c.id1
                 JOIN creature_queststarter cq ON ct.entry = cq.id
+                LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE 1=1 {zone_filter}
                 GROUP BY ct.entry, c.position_x, c.position_y, c.map
                 ORDER BY quest_count DESC
@@ -1475,7 +1502,9 @@ class GameToolExecutor:
                 # Add distance/direction if available
                 dist_info = self.format_distance_direction(r['pos_x'], r['pos_y'], r['map_id'])
                 dist_str = f" ({dist_info})" if dist_info else ""
-                result += f"- {npc_link}{dist_str} (Quest: {quest_link})\n"
+                loc = (f" in {r['area_name']}"
+                       if r.get('area_name') else "")
+                result += f"- {npc_link}{loc}{dist_str} (Quest: {quest_link})\n"
             result += "\nIMPORTANT: Include all [[...]] markers exactly as shown - they become clickable links!"
         else:
             result = f"Quest givers in {zone or 'the world'}:\n"
@@ -1484,7 +1513,9 @@ class GameToolExecutor:
                 # Add distance/direction if available
                 dist_info = self.format_distance_direction(r['pos_x'], r['pos_y'], r['map_id'])
                 dist_str = f" ({dist_info})" if dist_info else ""
-                result += f"- {npc_link}{dist_str} ({r['quest_count']} quests)\n"
+                loc = (f" in {r['area_name']}"
+                       if r.get('area_name') else "")
+                result += f"- {npc_link}{loc}{dist_str} ({r['quest_count']} quests)\n"
         return result
 
     def _get_available_quests(self, params: dict) -> str:

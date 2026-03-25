@@ -222,3 +222,20 @@ LLMGuide.Memory.ContextCount = 5
 #       Default: 10
 #
 LLMGuide.Memory.SummarizeThreshold = 10
+
+###############################################################################
+# DEVELOPER TOOLS
+###############################################################################
+
+#
+#   LLMGuide.GenerateAreas.OutputPath
+#       Output path for the .ag generate-areas command.
+#       This GM-only command generates a static SQL file
+#       with pre-computed NPC subzone names. The default
+#       path works inside the Docker dev container where
+#       the module directory is bind-mounted. For native
+#       (non-Docker) builds, override this to point to
+#       your local module data directory.
+#       Default: /azerothcore/modules/mod-llm-guide/data/sql/db-world/base/llm_guide_npc_areas.sql
+#
+# LLMGuide.GenerateAreas.OutputPath = /azerothcore/modules/mod-llm-guide/data/sql/db-world/base/llm_guide_npc_areas.sql
