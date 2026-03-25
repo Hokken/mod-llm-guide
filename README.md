@@ -319,6 +319,8 @@ mod-llm-guide/
 │   └── mod_llm_guide.conf.dist
 ├── data/sql/db-characters/base/
 │   └── llm_guide_queue.sql
+├── data/sql/db-world/base/
+│   └── llm_guide_npc_areas.sql
 ├── src/
 │   ├── llm_guide_loader.cpp
 │   ├── LLMGuideConfig.cpp
