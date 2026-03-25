@@ -55,26 +55,23 @@ Every item, quest, spell, and NPC name in responses becomes a clickable WoW link
 
 ## Features
 
-### Zero Hallucination, Real Data, Not Guesswork
-This isn't an AI that vaguely remembers WoW from training data. Every answer comes from **your actual game database**, the same tables your server uses. When the guide says [Riverpaw Leather Vest] drops from [Hogger] at 15%, that's the real drop rate from your `creature_loot_template`. When it says the closest mining trainer is 85 yards northeast, it calculated that from your character's live coordinates. No approximations, no "I think it's somewhere in Stormwind", real data, real answers.
+### Real Answers from Your Server
+Every answer comes from your actual game database — not from AI memory or training data. When the guide says [Riverpaw Leather Vest] drops from [Hogger] at 15%, that's the real drop rate on your server. No guesswork, no approximations, no outdated information.
 
-### 29 Database Tools
-The LLM has access to 29 specialized tools that query your game database in real time. It doesn't pick one and hope for the best, it chains multiple tools together to build complete answers. Ask "where can I learn dual wield?" and it identifies the spell, checks your class, finds the nearest trainer, and calculates the distance and direction from where you're standing.
+### Closest Results First
+Ask "where can I learn cooking?" and the guide shows the nearest trainer first, with the area they're in and map coordinates: *"Zarrin in Dolanaar (~15 m southeast at 57.1, 61.3)"*. Works with GPS addons. Supports yards or meters (configurable).
 
-### Distance, Direction, and Location
-Every NPC, trainer, and vendor result includes how far they are, which direction to go, the subzone they're in, and map coordinates: *"Zarrin in Dolanaar (~15 m southeast at 57.1, 61.3)"*. Results are sorted closest-first so the nearest option is always at the top. The guide knows your exact position and does the math so you don't have to open your map. Works with GPS addons that use map coordinates. Supports yards or meters (configurable).
+### Knows Your Character
+The guide reads your character's live state: level, race, class, zone, gold, professions, gear, and quest log. Ask "what quests can I do here?" and it filters by your level, class, and faction. Ask "where should I train mining?" and it knows your current skill level.
 
-### Knows Your Character Inside Out
-The guide doesn't give generic answers. It reads your character's live state from the server: level, race, class, zone, gold, talent spec, professions (with skill levels), gear, guild, group status, and your full quest log. Ask "what quests can I do here?" and it filters by your level, class, and faction. Ask "where should I train mining?" and it knows your current skill level.
+### Clickable Links
+Every item, quest, spell, and NPC name in responses becomes a proper in-game hyperlink. Hover for tooltips, click to inspect — just like links from real players.
 
-### Clickable WoW Links
-Every item, quest, spell, and NPC name in responses becomes a proper in-game hyperlink you can click, just like links from real players. Hover for tooltips, click to inspect. The guide formats them with correct quality colors and IDs straight from the database.
-
-### Fuzzy Search
-Don't worry about exact spelling. Ask for a "blacksmith trainer" and it finds blacksmithing trainers. Ask for "cooking supplies" and it finds cooking supply vendors by their NPC title. The guide handles typos, partial words, and natural phrasing — it matches what you mean, not just what you type.
+### Understands Natural Language
+Ask questions however you want. "Where can I buy cooking supplies?", "any blacksmith trainer near me?", "I need to find an inn" — the guide understands what you're looking for even with typos or casual phrasing.
 
 ### Multi-Provider Support
-Works with Anthropic Claude or OpenAI GPT, any model that supports tool calling. Haiku and GPT-4o-mini are the sweet spot: fast, cheap, and more than capable for database lookups. Local models (Ollama) are not currently supported, reliable function/tool calling across 29 tools requires models that can handle complex multi-step reasoning, and local models aren't quite there yet. Ollama support is on the roadmap for when local models catch up.
+Works with Anthropic Claude or OpenAI GPT. Haiku and GPT-4o-mini are recommended for their speed and low cost.
 
 ### What You Can Ask It About
 
@@ -293,49 +290,7 @@ Key settings in `mod_llm_guide.conf`:
 | Anthropic | Claude Haiku | ~$0.10-0.15 |
 | OpenAI | GPT-4o-mini | ~$0.15-0.20 |
 
-Tool-calling models are required for database lookups. Haiku and GPT-4o-mini both support this and are the recommended choices.
-
-## Architecture
-
-```
-Worldserver (C++)           Python Bridge
- |                            |
- | Player asks .ag question   |
- |──── INSERT queue ────────▶ |
- |                            |── call LLM with tools
- |                            |── LLM calls database tools
- |                            |── format response + links
- | ◀──── UPDATE response ────|
- |
- | Deliver to player chat
-```
-
-## Files
-
-```
-mod-llm-guide/
-├── README.md
-├── LICENSE
-├── .gitignore
-├── include.sh
-├── conf/
-│   └── mod_llm_guide.conf.dist
-├── data/sql/db-characters/base/
-│   └── llm_guide_queue.sql
-├── data/sql/db-world/base/
-│   └── llm_guide_npc_areas.sql
-├── src/
-│   ├── llm_guide_loader.cpp
-│   ├── LLMGuideConfig.cpp
-│   ├── LLMGuideConfig.h
-│   └── LLMGuideScript.cpp
-└── tools/
-    ├── llm_guide_bridge.py
-    ├── game_tools.py
-    ├── spell_names.py
-    ├── zone_coordinates.py
-    └── requirements.txt
-```
+Tool-calling models are required. Haiku and GPT-4o-mini both support this and are the recommended choices.
 
 ## Troubleshooting
 
@@ -349,21 +304,6 @@ mod-llm-guide/
 **Check logs:**
 - Docker: `docker logs ac-llm-guide-bridge --since 5m`
 - Non-Docker: check terminal output or redirect to a log file
-
-## Testing
-
-The module includes an E2E test suite (145 tests, 5 per tool)
-that validates tool selection, response quality, and link
-formatting across all 29 tools. Supports both Anthropic and
-OpenAI providers.
-
-```bash
-cd dev-only/tools/tests
-pip install anthropic mysql-connector-python openai
-python run_e2e_tests.py --host --verbose
-python run_e2e_tests.py --host --provider openai --model gpt-4o-mini
-python run_e2e_tests.py --host --tool find_vendor
-```
 
 ## License
 
