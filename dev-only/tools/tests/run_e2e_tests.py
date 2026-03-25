@@ -18,8 +18,15 @@ import time
 import argparse
 from datetime import datetime
 
-# Add parent directory (tools/) to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Fix Windows stdout encoding for Unicode
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8',
+                           errors='replace')
+
+# Add module tools/ directory to path for imports
+_test_dir = os.path.dirname(os.path.abspath(__file__))
+_module_root = os.path.join(_test_dir, '..', '..', '..')
+sys.path.insert(0, os.path.join(_module_root, 'tools'))
 from game_tools import GameToolExecutor, GAME_TOOLS
 from spell_names import SPELL_NAMES, SPELL_DESCRIPTIONS
 
@@ -51,7 +58,8 @@ def log_test(tool_name, question_num):
 
 class ToolTestRunner:
     def __init__(self, config_path=None,
-                 verbose=False, host_mode=False):
+                 verbose=False, host_mode=False,
+                 provider=None, model=None):
         self.verbose = verbose
         self.host_mode = host_mode
         self.results = {}
@@ -61,27 +69,54 @@ class ToolTestRunner:
         # Load configuration
         if config_path is None:
             if host_mode:
-                # Running from Windows host
                 script_dir = os.path.dirname(
                     os.path.abspath(__file__))
                 config_path = os.path.join(
                     script_dir, '..', '..', '..',
-                    '..', 'env', 'dist', 'etc',
-                    'modules',
+                    '..', '..', 'env', 'dist',
+                    'etc', 'modules',
                     'mod_llm_guide.conf')
             else:
                 config_path = "/config/mod_llm_guide.conf"
 
         self.config = self.load_config(config_path)
 
-        # Override DB host for host-mode
         if host_mode:
             self.config['db_host'] = 'localhost'
 
-        # Initialize Anthropic client
-        import anthropic
-        self.client = anthropic.Anthropic(api_key=self.config['api_key'])
-        self.model = self.config.get('model', 'claude-haiku-4-5-20251001')
+        # Provider selection (CLI overrides config)
+        self.provider = (
+            provider
+            or self.config.get('provider', 'anthropic')
+        )
+        self.model = model
+
+        if self.provider == 'openai':
+            import openai
+            self.model = (
+                self.model
+                or self.config.get(
+                    'model', 'gpt-4o-mini')
+            )
+            self.client = openai.OpenAI(
+                api_key=self.config.get(
+                    'openai_api_key', ''))
+            # Convert tools to OpenAI format
+            from llm_guide_bridge import (
+                convert_tools_to_openai_format)
+            self.openai_tools = (
+                convert_tools_to_openai_format(
+                    GAME_TOOLS))
+        else:
+            import anthropic
+            self.model = (
+                self.model
+                or self.config.get(
+                    'model',
+                    'claude-haiku-4-5-20251001')
+            )
+            self.client = anthropic.Anthropic(
+                api_key=self.config['api_key'])
 
         # Initialize game tools
         db_config = {
@@ -136,6 +171,10 @@ class ToolTestRunner:
 
                         if key == 'LLMGuide.Anthropic.ApiKey':
                             config['api_key'] = value
+                        elif key == 'LLMGuide.OpenAI.ApiKey':
+                            config['openai_api_key'] = value
+                        elif key == 'LLMGuide.Provider':
+                            config['provider'] = value
                         elif key == 'LLMGuide.Model':
                             config['model'] = value
                         elif key == 'LLMGuide.Database.Host':
@@ -165,10 +204,18 @@ Current player info: {context_str}
 You have access to tools to look up game data. Use them when players ask about vendors, trainers, NPCs, spells, or other factual game information. The tools query the actual game database for accurate information."""
 
     def call_llm_with_tools(self, question):
-        """Call the LLM with tools and capture tool usage."""
-        self.current_tool_calls = []
+        """Call the LLM with tools and capture
+        tool usage. Routes to provider-specific
+        implementation."""
+        if self.provider == 'openai':
+            return self._call_openai(question)
+        return self._call_anthropic(question)
 
-        messages = [{"role": "user", "content": question}]
+    def _call_anthropic(self, question):
+        """Anthropic Claude tool-calling loop."""
+        self.current_tool_calls = []
+        messages = [
+            {"role": "user", "content": question}]
         system_prompt = self.build_system_prompt()
         max_rounds = 3
         total_tokens = 0
@@ -183,7 +230,9 @@ You have access to tools to look up game data. Use them when players ask about v
                 temperature=0.3
             )
 
-            total_tokens += response.usage.input_tokens + response.usage.output_tokens
+            total_tokens += (
+                response.usage.input_tokens
+                + response.usage.output_tokens)
 
             if response.stop_reason == "tool_use":
                 tool_results = []
@@ -194,39 +243,117 @@ You have access to tools to look up game data. Use them when players ask about v
                         tool_name = block.name
                         tool_input = block.input
                         tool_use_id = block.id
-
-                        # Execute the tool
-                        result = self.tool_executor.execute_tool(tool_name, tool_input)
-
-                        # Record tool call
-                        self.current_tool_calls.append({
-                            'tool': tool_name,
-                            'input': tool_input,
-                            'result': result[:500] if len(result) > 500 else result
-                        })
-
+                        result = (
+                            self.tool_executor
+                            .execute_tool(
+                                tool_name,
+                                tool_input))
+                        self.current_tool_calls.append(
+                            {
+                                'tool': tool_name,
+                                'input': tool_input,
+                                'result': (
+                                    result[:500]
+                                    if len(result) > 500
+                                    else result)
+                            })
                         if self.verbose:
-                            log_info(f"  Tool: {tool_name}({json.dumps(tool_input)})")
-                            log_info(f"  Result: {result[:200]}...")
-
+                            log_info(
+                                f"  Tool: {tool_name}"
+                                f"({json.dumps(tool_input)})")
+                            log_info(
+                                f"  Result: "
+                                f"{result[:200]}...")
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
                             "content": result
                         })
-
-                messages.append({"role": "assistant", "content": assistant_content})
-                messages.append({"role": "user", "content": tool_results})
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_content})
+                messages.append({
+                    "role": "user",
+                    "content": tool_results})
             else:
-                # Extract final text
                 text = ""
                 for block in response.content:
                     if hasattr(block, 'text'):
                         text += block.text
+                return (text, total_tokens,
+                        self.current_tool_calls)
 
-                return text, total_tokens, self.current_tool_calls
+        return ("Error: Max tool rounds exceeded",
+                total_tokens, self.current_tool_calls)
 
-        return "Error: Max tool rounds exceeded", total_tokens, self.current_tool_calls
+    def _call_openai(self, question):
+        """OpenAI GPT tool-calling loop."""
+        self.current_tool_calls = []
+        system_prompt = self.build_system_prompt()
+        messages = [
+            {"role": "system",
+             "content": system_prompt},
+            {"role": "user",
+             "content": question},
+        ]
+        max_rounds = 3
+        total_tokens = 0
+
+        for round_num in range(max_rounds + 1):
+            response = self.client.chat.completions\
+                .create(
+                    model=self.model,
+                    max_tokens=800,
+                    messages=messages,
+                    tools=self.openai_tools,
+                    temperature=0.3,
+                )
+
+            choice = response.choices[0]
+            total_tokens += (
+                (response.usage.prompt_tokens or 0)
+                + (response.usage
+                   .completion_tokens or 0))
+
+            if (choice.finish_reason == "tool_calls"
+                    and choice.message.tool_calls):
+                messages.append(choice.message)
+
+                for tc in choice.message.tool_calls:
+                    tool_name = tc.function.name
+                    tool_input = json.loads(
+                        tc.function.arguments)
+                    result = (
+                        self.tool_executor
+                        .execute_tool(
+                            tool_name, tool_input))
+                    self.current_tool_calls.append({
+                        'tool': tool_name,
+                        'input': tool_input,
+                        'result': (
+                            result[:500]
+                            if len(result) > 500
+                            else result)
+                    })
+                    if self.verbose:
+                        log_info(
+                            f"  Tool: {tool_name}"
+                            f"({json.dumps(tool_input)})")
+                        log_info(
+                            f"  Result: "
+                            f"{result[:200]}...")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
+            else:
+                text = choice.message.content or ""
+                return (text, total_tokens,
+                        self.current_tool_calls)
+
+        return ("Error: Max tool rounds exceeded",
+                total_tokens, self.current_tool_calls)
 
     def evaluate_response(self, tool_name, question, response, expected_behavior, tool_calls):
         """Evaluate response for practical issues (not subjective quality)."""
@@ -413,7 +540,9 @@ You have access to tools to look up game data. Use them when players ask about v
         else:
             report_path = '/tmp/tool-test-report.md'
 
-        with open(report_path, 'w') as f:
+        # Use UTF-8 encoding for report file
+
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write(f"# Tool Test Report\n\n")
             f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"**Model:** {self.model}\n")
@@ -469,11 +598,19 @@ def main():
         '--host', action='store_true',
         help='Run from Windows host (uses localhost '
         'for DB, reads config from env/dist/)')
+    parser.add_argument(
+        '--provider', choices=['anthropic', 'openai'],
+        help='LLM provider (default: from config)')
+    parser.add_argument(
+        '--model',
+        help='Model override (e.g. gpt-4o-mini)')
     args = parser.parse_args()
 
     runner = ToolTestRunner(
         verbose=args.verbose,
-        host_mode=args.host)
+        host_mode=args.host,
+        provider=args.provider,
+        model=args.model)
     runner.run_all_tests(filter_tool=args.tool)
 
 

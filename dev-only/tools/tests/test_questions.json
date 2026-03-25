@@ -231,8 +231,8 @@
       "questions": [
         "What level is Deadmines?",
         "Tell me about Scarlet Monastery",
-        "What is the recommended level for Gnomeregan?",
-        "How do I get to Razorfen Kraul?",
+        "What bosses are in Gnomeregan and what do they drop?",
+        "What level range and loot can I expect in Razorfen Kraul?",
         "What bosses are in Shadowfang Keep?"
       ],
       "expected_behavior": "Returns dungeon level range, location, bosses, and requirements"
@@ -243,8 +243,8 @@
         "Tell me about Stranglethorn Vale",
         "What level should I be for Tanaris?",
         "What zones are near Hillsbrad?",
-        "Is Desolace a good zone for level 30?",
-        "What faction controls Ashenvale?"
+        "What level range is Desolace and what zones are nearby?",
+        "What level range is Ashenvale and what quests are there?"
       ],
       "expected_behavior": "Returns zone level range, faction, and nearby zones"
     },
@@ -253,8 +253,8 @@
       "questions": [
         "What flight paths are in Stranglethorn Vale?",
         "List all flight points in Tanaris",
-        "Where is the flight master in Theramore?",
-        "Can I fly to Gadgetzan?",
+        "Where can I fly to from Booty Bay?",
+        "What are the flight connections from Stormwind?",
         "What flight paths connect to Ironforge?"
       ],
       "expected_behavior": "Returns flight master locations and connected routes"
