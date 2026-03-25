@@ -61,14 +61,17 @@ This isn't an AI that vaguely remembers WoW from training data. Every answer com
 ### 29 Database Tools
 The LLM has access to 29 specialized tools that query your game database in real time. It doesn't pick one and hope for the best, it chains multiple tools together to build complete answers. Ask "where can I learn dual wield?" and it identifies the spell, checks your class, finds the nearest trainer, and calculates the distance and direction from where you're standing.
 
-### Distance and Direction, Your Personal Compass
-Every NPC, trainer, and vendor result includes how far they are and which direction to go: *"~45 yards northeast"*, *"~320 yards south"*. The guide knows your exact position in the world and does the math so you don't have to open your map. It even handles unit preferences, yards or meters, your call.
+### Distance, Direction, and Location
+Every NPC, trainer, and vendor result includes how far they are, which direction to go, the subzone they're in, and map coordinates: *"Zarrin in Dolanaar (~15 m southeast at 57.1, 61.3)"*. Results are sorted closest-first so the nearest option is always at the top. The guide knows your exact position and does the math so you don't have to open your map. Works with GPS addons that use map coordinates. Supports yards or meters (configurable).
 
 ### Knows Your Character Inside Out
 The guide doesn't give generic answers. It reads your character's live state from the server: level, race, class, zone, gold, talent spec, professions (with skill levels), gear, guild, group status, and your full quest log. Ask "what quests can I do here?" and it filters by your level, class, and faction. Ask "where should I train mining?" and it knows your current skill level.
 
 ### Clickable WoW Links
 Every item, quest, spell, and NPC name in responses becomes a proper in-game hyperlink you can click, just like links from real players. Hover for tooltips, click to inspect. The guide formats them with correct quality colors and IDs straight from the database.
+
+### Fuzzy Search
+Don't worry about exact spelling. Ask for a "blacksmith trainer" and it finds blacksmithing trainers. Ask for "cooking supplies" and it finds cooking supply vendors by their NPC title. The guide handles typos, partial words, and natural phrasing — it matches what you mean, not just what you type.
 
 ### Multi-Provider Support
 Works with Anthropic Claude or OpenAI GPT, any model that supports tool calling. Haiku and GPT-4o-mini are the sweet spot: fast, cheap, and more than capable for database lookups. Local models (Ollama) are not currently supported, reliable function/tool calling across 29 tools requires models that can handle complex multi-step reasoning, and local models aren't quite there yet. Ollama support is on the roadmap for when local models catch up.
@@ -346,6 +349,21 @@ mod-llm-guide/
 **Check logs:**
 - Docker: `docker logs ac-llm-guide-bridge --since 5m`
 - Non-Docker: check terminal output or redirect to a log file
+
+## Testing
+
+The module includes an E2E test suite (145 tests, 5 per tool)
+that validates tool selection, response quality, and link
+formatting across all 29 tools. Supports both Anthropic and
+OpenAI providers.
+
+```bash
+cd dev-only/tools/tests
+pip install anthropic mysql-connector-python openai
+python run_e2e_tests.py --host --verbose
+python run_e2e_tests.py --host --provider openai --model gpt-4o-mini
+python run_e2e_tests.py --host --tool find_vendor
+```
 
 ## License
 
