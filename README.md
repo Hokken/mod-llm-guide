@@ -12,11 +12,11 @@ An AI-powered in-game assistant for AzerothCore that actually queries your game 
   <a href="https://discord.gg/tvVcecuR"><img src="https://img.shields.io/badge/Discord-Join%20the%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join Discord"></a>
 </p>
 
-> See my other module: **[mod-llm-chatter](https://github.com/Hokken/mod-llm-chatter)** — AI-powered ambient bot conversations for mod-playerbots
+> See my other module: **[mod-llm-chatter](https://github.com/Hokken/mod-llm-chatter)**, AI-powered ambient bot conversations for mod-playerbots
 
 ---
 
-Ask a question, get an answer with clickable item/quest/spell links, backed by 29 specialized database tools that pull live data from your server.
+Ask a question, get an answer with clickable item/quest/spell links, all backed by live data from your server.
 
 ## What It Does
 
@@ -35,7 +35,7 @@ Azeroth Guide: Congrats on 40! A few things to look into:
   • You can now learn [Plate Mail] from your class trainer
     [Ander Germaine] (~85 yards northeast)
   • The quest [In the Name of the Light] opens up the
-    Scarlet Monastery chain — pick it up from [Raleigh the Devout]
+    Scarlet Monastery chain, pick it up from [Raleigh the Devout]
     in Southshore
   • At your level, Stranglethorn Vale and Tanaris are solid
     zones. You've got 3 quests in STV already in your log
@@ -56,7 +56,7 @@ Every item, quest, spell, and NPC name in responses becomes a clickable WoW link
 ## Features
 
 ### Real Answers from Your Server
-Every answer comes from your actual game database — not from AI memory or training data. When the guide says [Riverpaw Leather Vest] drops from [Hogger] at 15%, that's the real drop rate on your server. No guesswork, no approximations, no outdated information.
+Every answer comes from your actual game database, not from AI memory or training data. When the guide says [Riverpaw Leather Vest] drops from [Hogger] at 15%, that's the real drop rate on your server. No guesswork, no approximations, no outdated information.
 
 ### Closest Results First
 Ask "where can I learn cooking?" and the guide shows the nearest trainer first, with the area they're in and map coordinates: *"Zarrin in Dolanaar (~15 m southeast at 57.1, 61.3)"*. Works with GPS addons. Supports yards or meters (configurable).
@@ -65,10 +65,10 @@ Ask "where can I learn cooking?" and the guide shows the nearest trainer first, 
 The guide reads your character's live state: level, race, class, zone, gold, professions, gear, and quest log. Ask "what quests can I do here?" and it filters by your level, class, and faction. Ask "where should I train mining?" and it knows your current skill level.
 
 ### Clickable Links
-Every item, quest, spell, and NPC name in responses becomes a proper in-game hyperlink. Hover for tooltips, click to inspect — just like links from real players.
+Every item, quest, spell, and NPC name in responses becomes a proper in-game hyperlink. Hover for tooltips, click to inspect, just like links from real players.
 
 ### Understands Natural Language
-Ask questions however you want. "Where can I buy cooking supplies?", "any blacksmith trainer near me?", "I need to find an inn" — the guide understands what you're looking for even with typos or casual phrasing.
+Ask questions however you want. "Where can I buy cooking supplies?", "any blacksmith trainer near me?", "I need to find an inn", the guide understands what you're looking for even with typos or casual phrasing.
 
 ### Multi-Provider Support
 Works with Anthropic Claude or OpenAI GPT. Haiku and GPT-4o-mini are recommended for their speed and low cost.
