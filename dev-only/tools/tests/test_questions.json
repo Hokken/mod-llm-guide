@@ -1,0 +1,340 @@
+{
+  "test_config": {
+    "model": "claude-haiku-4-5-20251001",
+    "provider": "anthropic",
+    "player_context": {
+      "name": "TestPlayer",
+      "level": 30,
+      "class": "Hunter",
+      "race": "Night Elf",
+      "zone": "Stranglethorn Vale",
+      "faction": "Alliance",
+      "gold": "5g 50s",
+      "professions": ["Skinning (150)", "Leatherworking (120)"],
+      "position_x": -14281.9,
+      "position_y": 552.6,
+      "map_id": 0
+    }
+  },
+  "tools": {
+    "find_vendor": {
+      "description": "Find vendors selling specific items",
+      "questions": [
+        "Where can I buy arrows in Stormwind?",
+        "I need cooking supplies nearby",
+        "Who sells food and drink around here?",
+        "Any reagent vendor in Ironforge?",
+        "Where do I get mining supplies?"
+      ],
+      "expected_behavior": "Returns vendor NPCs with names, locations, distance, coordinates, and [[npc:...]] markers"
+    },
+    "find_trainer": {
+      "description": "Find class or profession trainers",
+      "questions": [
+        "Where is the hunter trainer in Darnassus?",
+        "I want to learn leatherworking, where do I go?",
+        "Where can I train cooking?",
+        "Any blacksmith trainer near me?",
+        "I need to find a first aid trainer"
+      ],
+      "expected_behavior": "Returns trainer NPCs with names, locations, distance, coordinates, and [[npc:...]] markers"
+    },
+    "find_service_npc": {
+      "description": "Find service NPCs like innkeepers, flight masters, bankers",
+      "questions": [
+        "Where is the flight master in Booty Bay?",
+        "I need to find an innkeeper to set my hearthstone",
+        "Where is the closest bank?",
+        "Is there a stable master nearby?",
+        "Where can I find the auctioneer?"
+      ],
+      "expected_behavior": "Returns service NPCs with names, locations, distance, and [[npc:...]] markers"
+    },
+    "find_npc": {
+      "description": "Find a specific NPC by name",
+      "questions": [
+        "Where is Gryan Stoutmantle?",
+        "Can you find Wharfmaster Lozgil?",
+        "Where is Hemet Nesingwary?",
+        "I'm looking for an NPC called Scooty",
+        "Where can I find Deeg?"
+      ],
+      "expected_behavior": "Returns NPC location with distance, coordinates, and [[npc:...]] marker"
+    },
+    "get_spell_info": {
+      "description": "Get training info for a specific spell",
+      "questions": [
+        "Tell me about the spell Arcane Shot",
+        "When can I learn Feign Death?",
+        "How much does it cost to train Aspect of the Hawk?",
+        "What level do hunters get Mend Pet?",
+        "When can I learn Steady Shot?"
+      ],
+      "expected_behavior": "Returns spell level requirement, cost, description, and [[spell:...]] marker"
+    },
+    "list_spells_by_level": {
+      "description": "List spells available at a specific level for a class",
+      "questions": [
+        "What hunter spells can I learn at level 30?",
+        "What spells does a mage get at level 10?",
+        "Show me warrior abilities at level 20",
+        "What new skills do rogues learn at level 40?",
+        "What priest spells are available at level 14?"
+      ],
+      "expected_behavior": "Returns list of spells with names, costs, descriptions, and [[spell:...]] markers"
+    },
+    "find_quest_giver": {
+      "description": "Find quest givers in a zone or for a specific quest",
+      "questions": [
+        "Who gives quests in Westfall?",
+        "Where do I pick up The Green Hills of Stranglethorn?",
+        "Any quest givers near me?",
+        "Who starts the Deadmines quest chain?",
+        "Where can I find quests in Darkshore?"
+      ],
+      "expected_behavior": "Returns quest giver NPCs with quest names, distance, and [[npc:...]] markers"
+    },
+    "get_available_quests": {
+      "description": "Get quests available at player's level in a zone",
+      "questions": [
+        "What quests can I do in Stranglethorn Vale at my level?",
+        "Are there any quests for me in Hillsbrad Foothills?",
+        "What quests should I do in Duskwood at level 25?",
+        "Any good quests for a level 30 in Arathi Highlands?",
+        "Show me available quests in Wetlands"
+      ],
+      "expected_behavior": "Returns list of quests with levels and [[quest:...]] markers"
+    },
+    "get_quest_info": {
+      "description": "Get detailed info about a specific quest",
+      "questions": [
+        "Tell me about The Defias Brotherhood quest",
+        "What are the objectives for Red Silk Bandanas?",
+        "What rewards do I get from The Legend of Stalvan?",
+        "How do I complete the Stranglethorn Fever quest?",
+        "What is the quest Big Game Hunter about?"
+      ],
+      "expected_behavior": "Returns quest objectives, rewards, and [[quest:...]] marker"
+    },
+    "get_quest_chain": {
+      "description": "Get full quest chain for a quest",
+      "questions": [
+        "What is the quest chain for The Defias Brotherhood?",
+        "Show me the Tower of Althalaxx quest chain",
+        "What quests lead up to The Legend of Stalvan?",
+        "What comes after the Missing Diplomat quest?",
+        "Is there a quest chain for Whirlwind Axe?"
+      ],
+      "expected_behavior": "Returns ordered quest chain with [[quest:...]] markers"
+    },
+    "get_class_quests": {
+      "description": "Find class-specific quests",
+      "questions": [
+        "What special quests are there for hunters?",
+        "Are there any warlock-specific quests?",
+        "Do druids have any class quests at level 10?",
+        "What paladin quests should I do?",
+        "Any special shaman quests I should know about?"
+      ],
+      "expected_behavior": "Returns class quests with levels and [[quest:...]] markers"
+    },
+    "get_item_info": {
+      "description": "Get detailed info about a specific item",
+      "questions": [
+        "Tell me about Herod's Shoulder",
+        "What stats does Sword of Omen have?",
+        "Where does Blackened Defias Armor drop?",
+        "Is the Venomstrike bow any good?",
+        "What does Corpsemaker look like stat-wise?"
+      ],
+      "expected_behavior": "Returns item stats, where to get it, and [[item:...]] marker"
+    },
+    "find_item_upgrades": {
+      "description": "Find gear upgrades for a specific slot",
+      "questions": [
+        "What chest upgrades are available for a level 30 hunter?",
+        "What are the best bows for a level 30 hunter?",
+        "I need better boots, what can I get at level 30?",
+        "Any good leather helm upgrades for my level?",
+        "What gloves should a level 30 hunter look for?"
+      ],
+      "expected_behavior": "Returns item list with stats and [[item:...]] markers"
+    },
+    "get_boss_loot": {
+      "description": "Get loot table for a dungeon boss",
+      "questions": [
+        "What does Van Cleef drop?",
+        "What loot can I get from Herod?",
+        "What drops from Arcanist Doan?",
+        "Show me the loot table for Bazil Thredd",
+        "What gear does Hogger drop?"
+      ],
+      "expected_behavior": "Returns boss loot with drop chances and [[item:...]] markers"
+    },
+    "get_creature_loot": {
+      "description": "Get loot table for regular mobs",
+      "questions": [
+        "What do Defias Bandits drop?",
+        "What can I get from killing wolves in Elwynn?",
+        "What loot do Stranglethorn Tigers drop?",
+        "Do Murlocs drop anything good?",
+        "What drops from Naga in Stranglethorn?"
+      ],
+      "expected_behavior": "Returns creature loot with drop chances"
+    },
+    "find_creature": {
+      "description": "Find a creature/mob by name",
+      "questions": [
+        "Where can I find Murlocs?",
+        "Where are Defias Pillagers located?",
+        "Where do Stranglethorn Raptors spawn?",
+        "I need to kill Shadow Panthers, where are they?",
+        "Where can I find Elder Stranglethorn Tigers?"
+      ],
+      "expected_behavior": "Returns creature locations with zone and spawn info"
+    },
+    "list_zone_creatures": {
+      "description": "List creatures in a zone",
+      "questions": [
+        "What mobs are in Duskwood?",
+        "What creatures can I find in Wetlands?",
+        "List the monsters in Stranglethorn Vale",
+        "What enemies are in Hillsbrad Foothills?",
+        "What hostiles are in Redridge Mountains?"
+      ],
+      "expected_behavior": "Returns creature list with levels and spawn counts"
+    },
+    "find_rare_spawn": {
+      "description": "Find rare spawn mobs",
+      "questions": [
+        "Are there any rare spawns in Westfall?",
+        "What rare mobs are in Darkshore?",
+        "Any rares in Stranglethorn Vale?",
+        "What rare creatures can I find in Duskwood?",
+        "Are there rare elite mobs in Arathi Highlands?"
+      ],
+      "expected_behavior": "Returns rare creature names and spawn locations"
+    },
+    "find_hunter_pet": {
+      "description": "Find tameable hunter pets",
+      "questions": [
+        "Where can I find a cat pet to tame?",
+        "What pets can I tame in Darkshore?",
+        "I want a wolf pet, where should I look?",
+        "Any good level 30 pets I can tame?",
+        "Where do I find a spider pet?"
+      ],
+      "expected_behavior": "Returns tameable creatures with family, level, and location"
+    },
+    "get_dungeon_info": {
+      "description": "Get info about a dungeon",
+      "questions": [
+        "What level is Deadmines?",
+        "Tell me about Scarlet Monastery",
+        "What is the recommended level for Gnomeregan?",
+        "How do I get to Razorfen Kraul?",
+        "What bosses are in Shadowfang Keep?"
+      ],
+      "expected_behavior": "Returns dungeon level range, location, bosses, and requirements"
+    },
+    "get_zone_info": {
+      "description": "Get general info about a zone",
+      "questions": [
+        "Tell me about Stranglethorn Vale",
+        "What level should I be for Tanaris?",
+        "What zones are near Hillsbrad?",
+        "Is Desolace a good zone for level 30?",
+        "What faction controls Ashenvale?"
+      ],
+      "expected_behavior": "Returns zone level range, faction, and nearby zones"
+    },
+    "get_flight_paths": {
+      "description": "Get flight paths for a zone",
+      "questions": [
+        "What flight paths are in Stranglethorn Vale?",
+        "List all flight points in Tanaris",
+        "Where is the flight master in Theramore?",
+        "Can I fly to Gadgetzan?",
+        "What flight paths connect to Ironforge?"
+      ],
+      "expected_behavior": "Returns flight master locations and connected routes"
+    },
+    "get_zone_fishing": {
+      "description": "Get fishing info for a zone",
+      "questions": [
+        "What fish can I catch in Stranglethorn Vale?",
+        "What skill do I need to fish in Tanaris?",
+        "What fishing level do I need for Westfall?",
+        "Can I fish Oily Blackmouth anywhere?",
+        "Where should I fish for Firefin Snapper?"
+      ],
+      "expected_behavior": "Returns fish types and skill requirements"
+    },
+    "get_zone_herbs": {
+      "description": "Get herbalism info for a zone",
+      "questions": [
+        "What herbs grow in Hillsbrad Foothills?",
+        "Where can I find Fadeleaf?",
+        "What herbalism skill do I need for Stranglethorn?",
+        "What herbs are in Wetlands?",
+        "Where does Kingsblood grow?"
+      ],
+      "expected_behavior": "Returns herb types and skill requirements"
+    },
+    "get_zone_mining": {
+      "description": "Get mining info for a zone",
+      "questions": [
+        "What ore can I mine in Arathi Highlands?",
+        "Where can I find Mithril?",
+        "What mining level do I need for Stranglethorn?",
+        "Where does Iron Ore spawn?",
+        "What can I mine at skill 150?"
+      ],
+      "expected_behavior": "Returns ore types and skill requirements"
+    },
+    "find_recipe_source": {
+      "description": "Find where to get a crafting recipe",
+      "questions": [
+        "Where do I get the pattern for Thick Leather?",
+        "Where can I get the recipe for Savory Deviate Delight?",
+        "How do I learn to make Heavy Leather?",
+        "Where does the Runecloth Bag pattern come from?",
+        "Who teaches the recipe for Greater Healing Potion?"
+      ],
+      "expected_behavior": "Returns recipe source (vendor/drop/trainer) with [[item:...]] markers"
+    },
+    "find_battlemaster": {
+      "description": "Find battleground queue NPCs",
+      "questions": [
+        "Where can I queue for Warsong Gulch in Stormwind?",
+        "How do I join Alterac Valley as Alliance?",
+        "Where is the Arathi Basin battlemaster?",
+        "I want to do some PvP, where do I sign up?",
+        "Where do I queue for battlegrounds?"
+      ],
+      "expected_behavior": "Returns battlemaster NPC locations with [[npc:...]] markers"
+    },
+    "get_weapon_skill_trainer": {
+      "description": "Find weapon skill trainers",
+      "questions": [
+        "Where can I learn to use swords in Stormwind?",
+        "Who teaches bows in Ironforge?",
+        "I want to learn crossbows, where do I go?",
+        "Where can I learn polearms?",
+        "Who trains two-handed swords?"
+      ],
+      "expected_behavior": "Returns weapon trainer with skills taught and [[npc:...]] marker"
+    },
+    "get_reputation_info": {
+      "description": "Get reputation info for a faction",
+      "questions": [
+        "How do I gain reputation with Darnassus?",
+        "What gives Thorium Brotherhood rep?",
+        "What rewards can I get from Timbermaw Hold rep?",
+        "How do I become exalted with Stormwind?",
+        "What factions give good hunter rewards?"
+      ],
+      "expected_behavior": "Returns rep sources (mobs, quests, turn-ins) and rewards by standing"
+    }
+  }
+}
