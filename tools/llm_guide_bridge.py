@@ -65,6 +65,56 @@ def extract_zone_from_context(char_context: str) -> str:
         return match.group(1).strip()
     return None
 
+
+def extract_player_defaults_from_context(
+    char_context: str
+) -> dict:
+    """Extract structured player defaults from context text.
+
+    Only parse fields that appear near the start of
+    BuildCharacterContext(). The C++ side stores at most
+    500 characters, so later sections are not safe to rely on.
+    """
+    defaults = {
+        "level": None,
+        "player_class": None,
+        "faction": None,
+    }
+    if not char_context:
+        return defaults
+
+    level_match = re.search(
+        r'level\s+(\d+)', char_context
+    )
+    if level_match:
+        defaults["level"] = int(
+            level_match.group(1)
+        )
+
+    class_match = re.search(
+        r'\b(Death Knight|Warrior|Paladin|Hunter|'
+        r'Rogue|Priest|Shaman|Mage|Warlock|Druid)\b'
+        r'(?:\s+in\s+[^.]+|\.)',
+        char_context,
+        re.IGNORECASE,
+    )
+    if class_match:
+        defaults["player_class"] = (
+            class_match.group(1).lower()
+        )
+
+    faction_match = re.search(
+        r'(?:^|[.]\s+)(Alliance|Horde|Unknown)\.',
+        char_context,
+        re.IGNORECASE,
+    )
+    if faction_match:
+        defaults["faction"] = (
+            faction_match.group(1).lower()
+        )
+
+    return defaults
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -249,6 +299,29 @@ class LLMBridge:
         """Create the database tables if they don't exist."""
         import mysql.connector
 
+        def add_column_if_missing(
+            cursor,
+            table_name: str,
+            column_name: str,
+            column_definition: str,
+            after_column: str | None = None,
+        ):
+            cursor.execute(
+                f"SHOW COLUMNS FROM `{table_name}` LIKE %s",
+                (column_name,),
+            )
+            if cursor.fetchone():
+                return
+
+            alter_sql = (
+                f"ALTER TABLE `{table_name}` "
+                f"ADD COLUMN `{column_name}` "
+                f"{column_definition}"
+            )
+            if after_column:
+                alter_sql += f" AFTER `{after_column}`"
+            cursor.execute(alter_sql)
+
         create_queue_sql = """
         CREATE TABLE IF NOT EXISTS `llm_guide_queue` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -260,6 +333,10 @@ class LLMBridge:
             `status` ENUM('pending', 'processing', 'complete', 'delivered', 'cancelled', 'error') NOT NULL DEFAULT 'pending',
             `error_message` VARCHAR(255) DEFAULT NULL,
             `tokens_used` INT UNSIGNED DEFAULT 0,
+            `position_x` FLOAT DEFAULT NULL,
+            `position_y` FLOAT DEFAULT NULL,
+            `map_id` INT UNSIGNED DEFAULT NULL,
+            `active_quest_ids` VARCHAR(255) DEFAULT NULL,
             `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             `processed_at` TIMESTAMP NULL DEFAULT NULL,
             PRIMARY KEY (`id`),
@@ -282,41 +359,60 @@ class LLMBridge:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='LLM Chat conversation memory'
         """
 
-        # Add character_context column if it doesn't exist (migration)
-        add_context_column = """
-        ALTER TABLE `llm_guide_queue`
-        ADD COLUMN IF NOT EXISTS `character_context` VARCHAR(500) DEFAULT NULL
-        AFTER `character_name`
-        """
-
-        # Add question/response columns to memory table (migration)
-        add_memory_question = """
-        ALTER TABLE `llm_guide_memory`
-        ADD COLUMN `question` TEXT NOT NULL AFTER `character_name`
-        """
-        add_memory_response = """
-        ALTER TABLE `llm_guide_memory`
-        ADD COLUMN `response` TEXT NOT NULL AFTER `question`
-        """
-
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
             cursor.execute(create_queue_sql)
             cursor.execute(create_memory_sql)
-            # Try to add columns (ignore error if already exists)
-            try:
-                cursor.execute(add_context_column)
-            except Exception:
-                pass  # Column already exists
-            try:
-                cursor.execute(add_memory_question)
-            except Exception:
-                pass  # Column already exists
-            try:
-                cursor.execute(add_memory_response)
-            except Exception:
-                pass  # Column already exists
+            add_column_if_missing(
+                cursor,
+                "llm_guide_queue",
+                "character_context",
+                "VARCHAR(500) DEFAULT NULL",
+                after_column="character_name",
+            )
+            add_column_if_missing(
+                cursor,
+                "llm_guide_queue",
+                "position_x",
+                "FLOAT DEFAULT NULL",
+                after_column="tokens_used",
+            )
+            add_column_if_missing(
+                cursor,
+                "llm_guide_queue",
+                "position_y",
+                "FLOAT DEFAULT NULL",
+                after_column="position_x",
+            )
+            add_column_if_missing(
+                cursor,
+                "llm_guide_queue",
+                "map_id",
+                "INT UNSIGNED DEFAULT NULL",
+                after_column="position_y",
+            )
+            add_column_if_missing(
+                cursor,
+                "llm_guide_queue",
+                "active_quest_ids",
+                "VARCHAR(255) DEFAULT NULL",
+                after_column="map_id",
+            )
+            add_column_if_missing(
+                cursor,
+                "llm_guide_memory",
+                "question",
+                "TEXT NOT NULL",
+                after_column="character_name",
+            )
+            add_column_if_missing(
+                cursor,
+                "llm_guide_memory",
+                "response",
+                "TEXT NOT NULL",
+                after_column="question",
+            )
             conn.commit()
             cursor.close()
             conn.close()
@@ -329,7 +425,7 @@ class LLMBridge:
         """Fetch pending requests from the queue."""
         cursor.execute("""
             SELECT id, character_guid, character_name, character_context, question,
-                   position_x, position_y, map_id
+                   position_x, position_y, map_id, active_quest_ids
             FROM llm_guide_queue
             WHERE status = 'pending'
             ORDER BY created_at ASC
@@ -737,7 +833,8 @@ class LLMBridge:
 
     def process_request(self, cursor, request):
         """Process a single request."""
-        request_id, char_guid, char_name, char_context, question, pos_x, pos_y, map_id = request
+        (request_id, char_guid, char_name, char_context, question,
+         pos_x, pos_y, map_id, active_quest_ids) = request
 
         logger.info(f"Processing request {request_id} from {char_name}: {question[:50]}...")
         self.mark_processing(cursor, request_id)
@@ -750,6 +847,33 @@ class LLMBridge:
                 logger.info(f"Player zone for tool injection: {player_zone}")
             else:
                 self.tool_executor.set_player_zone(None)
+
+            player_defaults = extract_player_defaults_from_context(
+                char_context
+            )
+            self.tool_executor.set_player_defaults(
+                level=player_defaults.get('level'),
+                player_class=player_defaults.get(
+                    'player_class'
+                ),
+                faction=player_defaults.get('faction'),
+            )
+            logger.info(
+                "Player defaults for tool injection: "
+                f"{player_defaults}"
+            )
+
+            parsed_active_quest_ids = []
+            if active_quest_ids:
+                for part in str(active_quest_ids).split(','):
+                    part = part.strip()
+                    if part.isdigit():
+                        parsed_active_quest_ids.append(
+                            int(part)
+                        )
+            self.tool_executor.set_active_quest_ids(
+                parsed_active_quest_ids
+            )
 
             # Set player position for distance calculations in tool results
             if pos_x is not None and pos_y is not None and map_id is not None:

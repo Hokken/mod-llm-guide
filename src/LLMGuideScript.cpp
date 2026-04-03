@@ -963,7 +963,8 @@ static std::string BuildCharacterContext(Player* player)
     // Zone (use GetZoneId for main zone, not GetAreaId which returns subzones)
     if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(player->GetZoneId()))
     {
-        ctx << " in " << area->area_name[0];  // English name
+        ctx << " in "
+            << area->area_name[sWorld->GetDefaultDbcLocale()];
     }
 
     ctx << ". ";
@@ -1173,17 +1174,37 @@ static bool SubmitQuestion(Player* player, const std::string& questionStr, bool 
     float posY = player->GetPositionY();
     uint32 mapId = player->GetMapId();
 
+    // Track active quest IDs separately so Python tools can exclude
+    // already-in-progress quests without relying on truncated context.
+    std::ostringstream activeQuestIds;
+    bool firstQuestId = true;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 questId = player->GetQuestSlotQuestId(slot);
+        if (!questId)
+            continue;
+
+        if (!firstQuestId)
+            activeQuestIds << ",";
+        activeQuestIds << questId;
+        firstQuestId = false;
+    }
+
+    // Numeric quest IDs only; safe to insert without string escaping.
+    std::string activeQuestIdList = activeQuestIds.str();
+
     // Insert into queue
     CharacterDatabase.Execute(
-        "INSERT INTO llm_guide_queue (character_guid, character_name, character_context, question, position_x, position_y, map_id, status, created_at) "
-        "VALUES ({}, '{}', '{}', '{}', {}, {}, {}, 'pending', NOW())",
+        "INSERT INTO llm_guide_queue (character_guid, character_name, character_context, question, position_x, position_y, map_id, active_quest_ids, status, created_at) "
+        "VALUES ({}, '{}', '{}', '{}', {}, {}, {}, '{}', 'pending', NOW())",
         guid,
         escapedName,
         escapedContext,
         escapedQuestion,
         posX,
         posY,
-        mapId);
+        mapId,
+        activeQuestIdList);
 
     // Update cooldown
     playerCooldowns[guid] = now;

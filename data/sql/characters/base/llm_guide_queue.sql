@@ -18,6 +18,7 @@ CREATE TABLE `llm_guide_queue` (
   `position_x` FLOAT DEFAULT NULL COMMENT 'Player X coordinate when question was asked',
   `position_y` FLOAT DEFAULT NULL COMMENT 'Player Y coordinate when question was asked',
   `map_id` INT UNSIGNED DEFAULT NULL COMMENT 'Map ID when question was asked',
+  `active_quest_ids` VARCHAR(255) DEFAULT NULL COMMENT 'Comma-separated active quest IDs for availability filtering',
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `processed_at` TIMESTAMP NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
