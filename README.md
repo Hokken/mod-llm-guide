@@ -26,8 +26,9 @@ Ask a question, get an answer with clickable item/quest/spell links, all backed 
   including Gemini 3.1 Flash-Lite defaults and Gemini reasoning/thinking
   config options.
 - Added OpenRouter support through its OpenAI-compatible API, with
-  optional attribution headers and `anthropic/claude-haiku-4.5` as the
-  recommended OpenRouter model.
+  optional attribution headers. Recommended OpenRouter models include
+  `anthropic/claude-haiku-4.5`, `openai/gpt-4o-mini`, and
+  `openai/gpt-4.1-mini`.
 - Clarified that Azeroth Guide requires models with reliable
   tool/function calling, regardless of provider. Plain-chat models or
   models with weak function argument handling are not suitable for
@@ -87,8 +88,9 @@ Ask questions however you want. "Where can I buy cooking supplies?", "any blacks
 
 ### Multi-Provider Support
 Works with Anthropic Claude, OpenAI GPT, Google Gemini, or OpenRouter.
-Haiku, GPT-4o-mini, Gemini 3.1 Flash-Lite, and OpenRouter-hosted
-Haiku 4.5 are recommended for their speed and low cost.
+Haiku, GPT-4o-mini, GPT-4.1-mini, Gemini 3.1 Flash-Lite, and
+OpenRouter-hosted Haiku 4.5 / GPT mini models are recommended for
+their speed and low cost.
 
 Model choice matters: Azeroth Guide depends on tool/function calling
 for factual answers. Regardless of provider, use a model that reliably
@@ -317,15 +319,16 @@ Key settings in `mod_llm_guide.conf`:
 |----------|-------|-------------------|
 | Anthropic | Claude Haiku | ~$0.10-0.15 |
 | OpenAI | GPT-4o-mini | ~$0.15-0.20 |
+| OpenAI | GPT-4.1-mini | varies by tool use and response length |
 | Google | Gemini 3.1 Flash-Lite | varies by tool use and response length |
-| OpenRouter | Claude Haiku 4.5 | varies by routed provider and response length |
+| OpenRouter | Claude Haiku 4.5, GPT-4o-mini, or GPT-4.1-mini | varies by routed provider and response length |
 
 Tool/function calling is required. The guide asks the model to call
 database tools for quests, NPCs, items, spells, trainers, vendors, and
 other factual lookups. Use a model that reliably supports function
-calling on your chosen provider. Haiku, GPT-4o-mini, Gemini 3.1
-Flash-Lite, and OpenRouter-hosted Claude Haiku 4.5 are the recommended
-choices.
+calling on your chosen provider. Haiku, GPT-4o-mini, GPT-4.1-mini,
+Gemini 3.1 Flash-Lite, and OpenRouter-hosted Claude Haiku 4.5 / GPT
+mini models are the recommended choices.
 
 ## Troubleshooting
 
