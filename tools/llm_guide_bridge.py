@@ -6,6 +6,8 @@ Polls the database for pending questions and sends them to an LLM API.
 Supports:
 - Anthropic Claude (Haiku, Sonnet, Opus) - with tool calling
 - OpenAI GPT (gpt-4o-mini, gpt-4o, etc.) - with tool calling
+- Google Gemini (Gemini 3 Flash, 2.5 Flash, etc.) - with tool calling
+- OpenRouter models - with OpenAI-compatible tool calling
 
 Setup:
 1. pip install -r requirements.txt
@@ -23,6 +25,48 @@ from pathlib import Path
 # Add tools directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 from game_tools import GAME_TOOLS, GameToolExecutor
+
+
+GOOGLE_OPENAI_BASE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/openai/"
+)
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_OPENROUTER_MODEL = "anthropic/claude-haiku-4.5"
+
+
+def resolve_model_alias(model_name: str) -> str:
+    """Resolve friendly model aliases to provider model IDs."""
+    normalized = (model_name or "").strip()
+    aliases = {
+        "google-2.5-flash": "gemini-2.5-flash",
+        "google2.5-flash": "gemini-2.5-flash",
+        "gemini-2.5-flash": "gemini-2.5-flash",
+        "google-3.1-flash-lite": "gemini-3.1-flash-lite",
+        "google3.1-flash-lite": "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+        "google-3-flash": "gemini-3-flash-preview",
+        "google3-flash": "gemini-3-flash-preview",
+        "gemini-3-flash": "gemini-3-flash-preview",
+        "gemini-3-flash-preview": "gemini-3-flash-preview",
+        "openrouter-auto": "openrouter/auto",
+    }
+    return aliases.get(normalized.lower(), normalized)
+
+
+def openrouter_headers(config: dict) -> dict:
+    """Build optional OpenRouter app-attribution headers."""
+    headers = {}
+    referer = get_config_value(
+        config, "LLMGuide.OpenRouter.HttpReferer", ""
+    ).strip()
+    title = get_config_value(
+        config, "LLMGuide.OpenRouter.Title", ""
+    ).strip()
+    if referer:
+        headers["HTTP-Referer"] = referer
+    if title:
+        headers["X-OpenRouter-Title"] = title
+    return headers
 
 
 def convert_tools_to_openai_format(anthropic_tools: list) -> list:
@@ -230,11 +274,43 @@ class LLMBridge:
         # Note: Table creation moved to run() after database connection is verified
 
         # LLM settings
-        self.provider = get_config_value(config, "LLMGuide.Provider", "anthropic")
+        self.provider = get_config_value(
+            config, "LLMGuide.Provider", "anthropic"
+        ).lower()
         self.anthropic_key = get_config_value(config, "LLMGuide.Anthropic.ApiKey", "")
         self.anthropic_model = get_config_value(config, "LLMGuide.Anthropic.Model", "claude-haiku-4-5-20251001")
         self.openai_key = get_config_value(config, "LLMGuide.OpenAI.ApiKey", "")
         self.openai_model = get_config_value(config, "LLMGuide.OpenAI.Model", "gpt-4o-mini")
+        self.google_key = get_config_value(config, "LLMGuide.Google.ApiKey", "")
+        self.google_model = resolve_model_alias(get_config_value(
+            config, "LLMGuide.Google.Model", "gemini-3.1-flash-lite"
+        ))
+        self.google_base_url = get_config_value(
+            config, "LLMGuide.Google.BaseUrl", GOOGLE_OPENAI_BASE_URL
+        )
+        self.google_reasoning_effort = get_config_value(
+            config, "LLMGuide.Google.ReasoningEffort", "minimal"
+        ).strip().lower()
+        self.google_thinking_budget = get_config_value(
+            config, "LLMGuide.Google.ThinkingBudget", ""
+        ).strip()
+        self.google_max_tokens_multiplier = get_config_float(
+            config, "LLMGuide.Google.MaxTokensMultiplier", 1
+        )
+        self.openrouter_key = get_config_value(
+            config, "LLMGuide.OpenRouter.ApiKey", ""
+        )
+        self.openrouter_model = resolve_model_alias(
+            get_config_value(
+                config, "LLMGuide.OpenRouter.Model",
+                DEFAULT_OPENROUTER_MODEL,
+            )
+        )
+        self.openrouter_base_url = get_config_value(
+            config, "LLMGuide.OpenRouter.BaseUrl",
+            OPENROUTER_BASE_URL,
+        )
+        self.openrouter_headers = openrouter_headers(config)
         self.max_tokens = get_config_int(config, "LLMGuide.MaxTokens", 500)
         self.temperature = get_config_float(config, "LLMGuide.Temperature", 0.7)
         self.system_prompt = get_config_value(config, "LLMGuide.SystemPrompt",
@@ -726,9 +802,14 @@ class LLMBridge:
 
     def call_openai(
         self, question: str, system_prompt: str = None,
-        memories_recent: list = None
+        memories_recent: list = None,
+        api_key: str = None,
+        model: str = None,
+        base_url: str = None,
+        default_headers: dict = None,
+        compatible_provider: str = "openai",
     ) -> tuple:
-        """Call OpenAI GPT API with full tool/function calling support.
+        """Call an OpenAI-compatible API with tool/function support.
 
         Args:
             question: The current user question
@@ -741,7 +822,15 @@ class LLMBridge:
         import openai
         import json
 
-        client = openai.OpenAI(api_key=self.openai_key)
+        client_kwargs = {
+            "api_key": api_key or self.openai_key,
+        }
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        if default_headers:
+            client_kwargs["default_headers"] = default_headers
+        client = openai.OpenAI(**client_kwargs)
+        model = model or self.openai_model
 
         # Build messages with conversation history as real turns
         messages = [
@@ -762,18 +851,71 @@ class LLMBridge:
         total_tokens = 0
         max_tool_rounds = 3  # Limit tool use iterations
         tools_were_used = False
+        google_thinking_config = None
+        if compatible_provider == "google" and self.google_thinking_budget:
+            try:
+                google_thinking_config = {
+                    "thinking_budget": int(
+                        self.google_thinking_budget
+                    )
+                }
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid LLMGuide.Google.ThinkingBudget=%r",
+                    self.google_thinking_budget,
+                )
 
         for round_num in range(max_tool_rounds + 1):
             # Make API call with tools
+            request_kwargs = {
+                "model": model,
+                "messages": messages,
+                "tools": GAME_TOOLS_OPENAI,
+                "temperature": self.temperature,
+            }
+            if compatible_provider in ("google", "openrouter"):
+                multiplier = max(
+                    1.0,
+                    min(
+                        self.google_max_tokens_multiplier
+                        if compatible_provider == "google"
+                        else 1.0,
+                        8.0,
+                    ),
+                )
+                request_kwargs["max_tokens"] = int(
+                    self.max_tokens * multiplier
+                )
+                if compatible_provider == "google" and google_thinking_config:
+                    request_kwargs["extra_body"] = {
+                        "extra_body": {
+                            "google": {
+                                "thinking_config": (
+                                    google_thinking_config
+                                ),
+                            },
+                        },
+                    }
+                elif (
+                    compatible_provider == "google"
+                    and
+                    self.google_reasoning_effort
+                    and self.google_reasoning_effort
+                    not in ("0", "none", "off", "disabled")
+                ):
+                    request_kwargs["reasoning_effort"] = (
+                        self.google_reasoning_effort
+                    )
+            else:
+                request_kwargs["max_completion_tokens"] = self.max_tokens
             response = client.chat.completions.create(
-                model=self.openai_model,
-                max_completion_tokens=self.max_tokens,
-                messages=messages,
-                tools=GAME_TOOLS_OPENAI,
-                temperature=self.temperature
+                **request_kwargs
             )
 
-            total_tokens += response.usage.total_tokens
+            usage = getattr(response, "usage", None)
+            total_tokens += int(
+                getattr(usage, "total_tokens", 0) or 0
+            )
             message = response.choices[0].message
 
             # Check if we need to handle tool calls
@@ -813,6 +955,37 @@ class LLMBridge:
         logger.warning(f"Hit max tool rounds ({max_tool_rounds}), returning partial response")
         return "I'm having trouble looking that up. Please try rephrasing your question.", total_tokens, tools_were_used
 
+    def call_google(
+        self, question: str, system_prompt: str = None,
+        memories_recent: list = None,
+    ) -> tuple:
+        """Call Gemini through Google's OpenAI-compatible endpoint."""
+        return self.call_openai(
+            question,
+            system_prompt,
+            memories_recent,
+            api_key=self.google_key,
+            model=self.google_model,
+            base_url=self.google_base_url,
+            compatible_provider="google",
+        )
+
+    def call_openrouter(
+        self, question: str, system_prompt: str = None,
+        memories_recent: list = None,
+    ) -> tuple:
+        """Call OpenRouter through its OpenAI-compatible endpoint."""
+        return self.call_openai(
+            question,
+            system_prompt,
+            memories_recent,
+            api_key=self.openrouter_key,
+            model=self.openrouter_model,
+            base_url=self.openrouter_base_url,
+            default_headers=self.openrouter_headers,
+            compatible_provider="openrouter",
+        )
+
     def call_llm(
         self, question: str, system_prompt: str = None,
         memories_recent: list = None
@@ -824,6 +997,14 @@ class LLMBridge:
             )
         elif self.provider == "openai":
             return self.call_openai(
+                question, system_prompt, memories_recent
+            )
+        elif self.provider == "google":
+            return self.call_google(
+                question, system_prompt, memories_recent
+            )
+        elif self.provider == "openrouter":
+            return self.call_openrouter(
                 question, system_prompt, memories_recent
             )
         else:
@@ -952,18 +1133,38 @@ class LLMBridge:
             if not self.openai_key:
                 logger.error("OpenAI API key not configured (LLMGuide.OpenAI.ApiKey)")
                 return False
+        elif self.provider == "google":
+            if not self.google_key:
+                logger.error("Google API key not configured (LLMGuide.Google.ApiKey)")
+                return False
+        elif self.provider == "openrouter":
+            if not self.openrouter_key:
+                logger.error("OpenRouter API key not configured (LLMGuide.OpenRouter.ApiKey)")
+                return False
         else:
             logger.error(f"Unknown LLM provider: {self.provider}")
             return False
 
         return True
 
+    def active_model(self) -> str:
+        """Return the configured model for the active provider."""
+        if self.provider == "anthropic":
+            return self.anthropic_model
+        if self.provider == "openai":
+            return self.openai_model
+        if self.provider == "google":
+            return self.google_model
+        if self.provider == "openrouter":
+            return self.openrouter_model
+        return "(unknown)"
+
     def run(self):
         """Main loop."""
         logger.info("=" * 60)
         logger.info("LLM Bridge for mod-llm-guide starting...")
         logger.info(f"Provider: {self.provider}")
-        logger.info(f"Model: {self.anthropic_model if self.provider == 'anthropic' else self.openai_model}")
+        logger.info(f"Model: {self.active_model()}")
         logger.info(f"Tools: {len(GAME_TOOLS)} game data tools available")
         logger.info(f"Distance unit: {self.distance_unit}")
         logger.info(f"Poll interval: {self.poll_interval}s")

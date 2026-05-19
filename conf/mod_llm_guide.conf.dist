@@ -3,7 +3,8 @@
 #
 # This module allows players to ask questions to an AI assistant (Azeroth Guide)
 # using the .ag command. Responses are powered by external LLM APIs
-# (Anthropic Claude or OpenAI GPT) via a Python bridge script.
+# (Anthropic Claude, OpenAI GPT, Google Gemini, or OpenRouter) via a
+# Python bridge script.
 #
 # SETUP INSTRUCTIONS:
 # 1. Copy this file to your server's config directory as mod_llm_guide.conf
@@ -70,7 +71,8 @@ LLMGuide.MaxPendingPerPlayer = 3
 
 #
 #   LLMGuide.Provider
-#       Which LLM provider to use: "anthropic" or "openai"
+#       Which LLM provider to use:
+#       "anthropic", "openai", "google", or "openrouter"
 #       Default: anthropic
 #
 LLMGuide.Provider = anthropic
@@ -106,6 +108,96 @@ LLMGuide.OpenAI.ApiKey =
 #       Default: gpt-4o-mini
 #
 LLMGuide.OpenAI.Model = gpt-4o-mini
+
+#
+#   LLMGuide.Google.ApiKey
+#       Your Google Gemini API key.
+#       Get one at: https://aistudio.google.com/app/apikey
+#       Default: (empty - must be configured)
+#
+LLMGuide.Google.ApiKey =
+
+#
+#   LLMGuide.Google.Model
+#       Google Gemini model to use
+#       Options: gemini-3.1-flash-lite (fastest/cheap/tested),
+#                gemini-2.5-flash (fast/cheap),
+#                gemini-3-flash-preview (frontier Flash preview)
+#       Alias accepted: gemini-3-flash
+#       Default: gemini-3.1-flash-lite
+#
+LLMGuide.Google.Model = gemini-3.1-flash-lite
+
+#
+#   LLMGuide.Google.BaseUrl
+#       Google Gemini OpenAI-compatible endpoint.
+#       Only change this if Google changes the compatibility endpoint.
+#
+LLMGuide.Google.BaseUrl = https://generativelanguage.googleapis.com/v1beta/openai/
+
+#
+#   LLMGuide.Google.ReasoningEffort
+#       Gemini reasoning effort for the OpenAI-compatible API.
+#       Used only when Google.ThinkingBudget is empty.
+#       Recommended for Gemini 3.1 Flash-Lite: "minimal".
+#       Set empty or "off" to omit the parameter.
+#
+LLMGuide.Google.ReasoningEffort = minimal
+
+#
+#   LLMGuide.Google.ThinkingBudget
+#       Gemini thinking token budget for the OpenAI-compatible API.
+#       For Gemini 2.5 Flash, set this to 0 to disable thinking for
+#       fast guide responses.
+#       Set empty to use ReasoningEffort instead.
+#
+LLMGuide.Google.ThinkingBudget =
+
+#
+#   LLMGuide.Google.MaxTokensMultiplier
+#       Multiplies the guide output token budget for Gemini.
+#       Default: 1
+#
+LLMGuide.Google.MaxTokensMultiplier = 1
+
+#
+#   LLMGuide.OpenRouter.ApiKey
+#       Your OpenRouter API key.
+#       Get one at: https://openrouter.ai/keys
+#       Default: (empty - must be configured if Provider = openrouter)
+#
+LLMGuide.OpenRouter.ApiKey =
+
+#
+#   LLMGuide.OpenRouter.Model
+#       OpenRouter model slug to use.
+#       Options: anthropic/claude-haiku-4.5 (recommended),
+#                openai/gpt-4o-mini,
+#                openrouter/auto
+#       Default: anthropic/claude-haiku-4.5
+#
+LLMGuide.OpenRouter.Model = anthropic/claude-haiku-4.5
+
+#
+#   LLMGuide.OpenRouter.BaseUrl
+#       OpenRouter OpenAI-compatible endpoint.
+#       Only change this if OpenRouter changes the compatibility endpoint.
+#
+LLMGuide.OpenRouter.BaseUrl = https://openrouter.ai/api/v1
+
+#
+#   LLMGuide.OpenRouter.HttpReferer
+#       Optional site URL for OpenRouter attribution/rankings.
+#       Leave empty if you do not want to send this header.
+#
+LLMGuide.OpenRouter.HttpReferer =
+
+#
+#   LLMGuide.OpenRouter.Title
+#       Optional app/site title for OpenRouter attribution/rankings.
+#       Leave empty if you do not want to send this header.
+#
+LLMGuide.OpenRouter.Title =
 
 #
 #   LLMGuide.MaxTokens

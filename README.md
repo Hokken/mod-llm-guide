@@ -18,6 +18,21 @@ An AI-powered in-game assistant for AzerothCore that actually queries your game 
 
 Ask a question, get an answer with clickable item/quest/spell links, all backed by live data from your server.
 
+## Latest Updates
+
+### May 2026 - Google Gemini and OpenRouter Support
+
+- Added Google Gemini support through Google's OpenAI-compatible API,
+  including Gemini 3.1 Flash-Lite defaults and Gemini reasoning/thinking
+  config options.
+- Added OpenRouter support through its OpenAI-compatible API, with
+  optional attribution headers and `anthropic/claude-haiku-4.5` as the
+  recommended OpenRouter model.
+- Clarified that Azeroth Guide requires models with reliable
+  tool/function calling, regardless of provider. Plain-chat models or
+  models with weak function argument handling are not suitable for
+  factual guide answers.
+
 ## What It Does
 
 **It knows where things are, relative to you:**
@@ -71,7 +86,15 @@ Every item, quest, spell, and NPC name in responses becomes a proper in-game hyp
 Ask questions however you want. "Where can I buy cooking supplies?", "any blacksmith trainer near me?", "I need to find an inn", the guide understands what you're looking for even with typos or casual phrasing.
 
 ### Multi-Provider Support
-Works with Anthropic Claude or OpenAI GPT. Haiku and GPT-4o-mini are recommended for their speed and low cost.
+Works with Anthropic Claude, OpenAI GPT, Google Gemini, or OpenRouter.
+Haiku, GPT-4o-mini, Gemini 3.1 Flash-Lite, and OpenRouter-hosted
+Haiku 4.5 are recommended for their speed and low cost.
+
+Model choice matters: Azeroth Guide depends on tool/function calling
+for factual answers. Regardless of provider, use a model that reliably
+supports tool calls and structured tool arguments. Models that only do
+plain chat, ignore tools, or produce malformed function arguments will
+give poor or incorrect guide answers.
 
 ### What You Can Ask It About
 
@@ -114,7 +137,10 @@ planning what to do next.
 
 - AzerothCore WotLK (3.3.5a)
 - Python 3.8+
-- An API key from [Anthropic](https://console.anthropic.com/) or [OpenAI](https://platform.openai.com/)
+- An API key from [Anthropic](https://console.anthropic.com/),
+  [OpenAI](https://platform.openai.com/),
+  [Google AI Studio](https://aistudio.google.com/app/apikey), or
+  [OpenRouter](https://openrouter.ai/keys)
 
 ## Quick Start (Docker)
 
@@ -271,9 +297,11 @@ Key settings in `mod_llm_guide.conf`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `LLMGuide.Enable` | 0 | Enable the module |
-| `LLMGuide.Provider` | anthropic | `anthropic` or `openai` |
+| `LLMGuide.Provider` | anthropic | `anthropic`, `openai`, `google`, or `openrouter` |
 | `LLMGuide.Anthropic.ApiKey` | -- | Your Anthropic API key |
 | `LLMGuide.OpenAI.ApiKey` | -- | Your OpenAI API key |
+| `LLMGuide.Google.ApiKey` | -- | Your Google Gemini API key |
+| `LLMGuide.OpenRouter.ApiKey` | -- | Your OpenRouter API key |
 | `LLMGuide.Database.Host` | localhost | Use `ac-database` for Docker |
 | `LLMGuide.CooldownSeconds` | 10 | Seconds between questions |
 | `LLMGuide.MaxTokens` | 300 | Max response tokens |
@@ -289,8 +317,15 @@ Key settings in `mod_llm_guide.conf`:
 |----------|-------|-------------------|
 | Anthropic | Claude Haiku | ~$0.10-0.15 |
 | OpenAI | GPT-4o-mini | ~$0.15-0.20 |
+| Google | Gemini 3.1 Flash-Lite | varies by tool use and response length |
+| OpenRouter | Claude Haiku 4.5 | varies by routed provider and response length |
 
-Tool-calling models are required. Haiku and GPT-4o-mini both support this and are the recommended choices.
+Tool/function calling is required. The guide asks the model to call
+database tools for quests, NPCs, items, spells, trainers, vendors, and
+other factual lookups. Use a model that reliably supports function
+calling on your chosen provider. Haiku, GPT-4o-mini, Gemini 3.1
+Flash-Lite, and OpenRouter-hosted Claude Haiku 4.5 are the recommended
+choices.
 
 ## Troubleshooting
 
