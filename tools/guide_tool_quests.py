@@ -97,6 +97,7 @@ class GuideToolQuestMixin:
         quest_name = params.get("quest_name")
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         if quest_name:
@@ -112,7 +113,7 @@ class GuideToolQuestMixin:
                 FROM quest_template qt
                 JOIN creature_queststarter cq ON qt.ID = cq.quest
                 JOIN creature_template ct ON cq.id = ct.entry
-                JOIN creature c ON ct.entry = c.id1
+                JOIN creature c ON ct.entry = c.{entry_col}
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE qt.LogTitle LIKE %s
                 {order}
@@ -131,7 +132,7 @@ class GuideToolQuestMixin:
                        na.area_name
                        {dist_cols}
                 FROM creature_template ct
-                JOIN creature c ON ct.entry = c.id1
+                JOIN creature c ON ct.entry = c.{entry_col}
                 JOIN creature_queststarter cq ON ct.entry = cq.id
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE 1=1 {zone_filter}
@@ -219,6 +220,7 @@ class GuideToolQuestMixin:
             return f"Zone '{zone}' not found. Try a different zone name."
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         faction_filter = ""
@@ -269,7 +271,7 @@ class GuideToolQuestMixin:
             LEFT JOIN quest_template_addon qta ON qt.ID = qta.ID
             JOIN creature_queststarter cq ON qt.ID = cq.quest
             JOIN creature_template ct ON cq.id = ct.entry
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             WHERE qt.MinLevel <= %s
               AND qt.QuestLevel >= %s
               AND qt.QuestLevel <= %s
@@ -327,6 +329,7 @@ class GuideToolQuestMixin:
             )
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute("""
@@ -475,14 +478,14 @@ class GuideToolQuestMixin:
                     out += f"- {obj}\n"
                 out += "\n"
 
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT ct.name, ct.entry,
                     c.map, c.areaId
                 FROM creature_queststarter cq
                 JOIN creature_template ct
                     ON cq.id = ct.entry
                 LEFT JOIN creature c
-                    ON c.id1 = ct.entry
+                    ON c.{entry_col} = ct.entry
                 WHERE cq.quest = %s
                 LIMIT 1
             """, (quest['ID'],))

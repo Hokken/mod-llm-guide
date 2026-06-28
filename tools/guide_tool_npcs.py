@@ -80,6 +80,7 @@ class GuideToolNpcMixin:
                 ord_params, dist_active = \
                 self._distance_order_params()
             conn = self.get_connection()
+            entry_col = self._creature_entry_column(conn)
             cursor = conn.cursor(dictionary=True)
             cursor.execute(f"""
                 SELECT DISTINCT ct.entry as vendor_entry, ct.name as vendor_name, ct.subname as title,
@@ -87,7 +88,7 @@ class GuideToolNpcMixin:
                        na.area_name
                        {dist_cols}
                 FROM creature_template ct
-                JOIN creature c ON ct.entry = c.id1
+                JOIN creature c ON ct.entry = c.{entry_col}
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE (ct.subname LIKE '%Supplies%' OR ct.subname LIKE '%Goods%' OR ct.subname LIKE '%Merchant%')
                   AND ct.npcflag & 128 > 0 {zone_filter}
@@ -154,6 +155,7 @@ class GuideToolNpcMixin:
             self._distance_order_params()
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
         vendors = []
 
@@ -167,7 +169,7 @@ class GuideToolNpcMixin:
                        {dist_cols}
                 FROM npc_vendor nv
                 JOIN creature_template ct ON nv.entry = ct.entry
-                JOIN creature c ON ct.entry = c.id1
+                JOIN creature c ON ct.entry = c.{entry_col}
                 JOIN item_template it ON nv.item = it.entry
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE ({' OR '.join(conditions)}) {zone_filter}
@@ -187,7 +189,7 @@ class GuideToolNpcMixin:
                        {dist_cols}
                 FROM npc_vendor nv
                 JOIN creature_template ct ON nv.entry = ct.entry
-                JOIN creature c ON ct.entry = c.id1
+                JOIN creature c ON ct.entry = c.{entry_col}
                 JOIN item_template it ON nv.item = it.entry
                 LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
                 WHERE ({placeholders}) {zone_filter}
@@ -241,6 +243,7 @@ class GuideToolNpcMixin:
             self._distance_order_params()
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
         cursor.execute(f"""
             SELECT DISTINCT
@@ -254,7 +257,7 @@ class GuideToolNpcMixin:
                 na.zone_name as npc_zone
                 {dist_cols}
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             LEFT JOIN llm_guide_npc_areas na
                 ON na.creature_guid = c.guid
             WHERE ct.subname LIKE %s
@@ -349,6 +352,7 @@ class GuideToolNpcMixin:
             self._distance_order_params()
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute(f"""
@@ -357,7 +361,7 @@ class GuideToolNpcMixin:
                    na.area_name
                    {dist_cols}
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.subname LIKE %s AND ct.npcflag & 16 > 0 {zone_filter}
             {order}
@@ -407,6 +411,7 @@ class GuideToolNpcMixin:
             self._distance_order_params()
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute(f"""
@@ -415,7 +420,7 @@ class GuideToolNpcMixin:
                    na.area_name
                    {dist_cols}
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.subname LIKE %s {zone_filter}
             {order}
@@ -462,6 +467,7 @@ class GuideToolNpcMixin:
             self._distance_order_params()
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute(f"""
@@ -470,7 +476,7 @@ class GuideToolNpcMixin:
                    na.area_name
                    {dist_cols}
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
             WHERE ct.name LIKE %s {zone_filter}
             {order}
@@ -515,12 +521,13 @@ class GuideToolNpcMixin:
         zone_coords, zone_filter = self._get_zone_filter(zone) if zone else (None, "")
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute(f"""
             SELECT DISTINCT ct.entry, ct.name, ct.minlevel, ct.maxlevel, ct.`rank`
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             WHERE ct.name LIKE %s {zone_filter}
             LIMIT 10
         """, (f"%{creature_name}%",))

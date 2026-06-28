@@ -871,6 +871,34 @@ class GameToolExecutor(
         world_config['database'] = 'acore_world'
         return mysql.connector.connect(**world_config)
 
+    def _creature_entry_column(self, conn):
+        """Resolve the creature-entry column name once, cached.
+
+        Upstream AzerothCore renamed creature.id1 -> creature.id
+        (PR #25197, migration 2026_06_16_00). Detect which column
+        this server's schema uses so queries work on both the old
+        and updated source trees. Returns 'id' or 'id1'.
+        """
+        col = getattr(self, '_creature_entry_col', None)
+        if col:
+            return col
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = 'acore_world' "
+                "AND TABLE_NAME = 'creature' "
+                "AND COLUMN_NAME IN ('id', 'id1') "
+                "ORDER BY (COLUMN_NAME = 'id') DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            col = row[0] if row else 'id'
+        except Exception:
+            col = 'id'
+        self._creature_entry_col = col
+        return col
+
     def _get_zone_filter(self, zone: str) -> tuple:
         """Get zone coordinates, zone_id, and build SQL filter.
 
@@ -1156,6 +1184,7 @@ class GameToolExecutor(
                 break
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         zone_coords, zone_filter = self._get_zone_filter(zone) if zone else (None, "")
@@ -1165,7 +1194,7 @@ class GameToolExecutor(
             cursor.execute(f"""
                 SELECT DISTINCT ct.entry, ct.name, ct.minlevel, ct.maxlevel
                 FROM creature_template ct
-                JOIN creature c ON ct.entry = c.id1
+                JOIN creature c ON ct.entry = c.{entry_col}
                 WHERE ct.type = 1 AND ct.family = %s
                   AND ct.minlevel <= %s
                   {zone_filter}
@@ -1176,7 +1205,7 @@ class GameToolExecutor(
             cursor.execute(f"""
                 SELECT DISTINCT ct.entry, ct.name, ct.minlevel, ct.maxlevel, ct.family
                 FROM creature_template ct
-                JOIN creature c ON ct.entry = c.id1
+                JOIN creature c ON ct.entry = c.{entry_col}
                 WHERE ct.type = 1 AND ct.family > 0
                   AND ct.minlevel <= %s
                   {zone_filter}
@@ -1483,6 +1512,7 @@ class GameToolExecutor(
             return "Please specify a creature name."
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         zone_coords, zone_filter = self._get_zone_filter(zone) if zone else (None, "")
@@ -1491,7 +1521,7 @@ class GameToolExecutor(
         cursor.execute(f"""
             SELECT DISTINCT ct.entry, ct.name, ct.minlevel, ct.maxlevel, ct.lootid
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             WHERE ct.name LIKE %s {zone_filter}
             LIMIT 5
         """, (f"%{creature_name}%",))
@@ -1795,6 +1825,7 @@ class GameToolExecutor(
             return f"Zone '{zone}' not found. Try zones like: darkshore, westfall, barrens."
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         # Build level filter
@@ -1811,7 +1842,7 @@ class GameToolExecutor(
                 ct.entry, ct.name, ct.minlevel, ct.maxlevel, ct.`rank`,
                 COUNT(c.guid) AS spawn_count
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             WHERE 1=1 {zone_filter}
               AND ct.faction IN (14, 16, 17, 19, 20, 21, 22, 24, 28, 32, 34, 45, 48, 54, 55, 56, 60, 64, 80, 85, 87, 90, 93, 168)
               AND ct.unit_flags NOT IN (33554432, 67108864)
@@ -1857,6 +1888,7 @@ class GameToolExecutor(
             return f"Zone '{zone}' not found. Try zones like: darkshore, westfall, barrens."
 
         conn = self.get_connection()
+        entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
         # Use coordinate-based filtering (zoneId column often unpopulated)
@@ -1869,7 +1901,7 @@ class GameToolExecutor(
                 AVG(c.position_x) AS avg_x,
                 AVG(c.position_y) AS avg_y
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             WHERE 1=1 {zone_filter}
               AND ct.`rank` = 4
               AND ct.name NOT LIKE '%%Trigger%%'
@@ -1887,7 +1919,7 @@ class GameToolExecutor(
                 ct.entry, ct.name, ct.minlevel, ct.maxlevel,
                 COUNT(c.guid) AS spawn_count
             FROM creature_template ct
-            JOIN creature c ON ct.entry = c.id1
+            JOIN creature c ON ct.entry = c.{entry_col}
             WHERE 1=1 {zone_filter}
               AND ct.`rank` = 2
               AND ct.name NOT LIKE '%%Trigger%%'

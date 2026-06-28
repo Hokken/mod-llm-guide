@@ -29,6 +29,29 @@
 #include <stdexcept>
 #include <unordered_map>
 
+namespace
+{
+    // Upstream AzerothCore renamed creature.id1 -> creature.id
+    // (PR #25197, migration 2026_06_16_00). Resolve the column
+    // name once (lazy, thread-safe magic static) so our SQL
+    // works on both the old and updated core source.
+    std::string const& GetCreatureEntryColumn()
+    {
+        static std::string const column = []() -> std::string
+        {
+            if (QueryResult r = WorldDatabase.Query(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = 'acore_world' "
+                    "AND TABLE_NAME = 'creature' "
+                    "AND COLUMN_NAME IN ('id', 'id1') "
+                    "ORDER BY (COLUMN_NAME = 'id') DESC LIMIT 1"))
+                return (*r)[0].Get<std::string>();
+            return "id";
+        }();
+        return column;
+    }
+}
+
 // The name players whisper to for the AI assistant
 static const std::string GUIDE_NAME = "AzerothGuide";
 static const std::string GUIDE_NAME_LOWER = "azerothguide";
@@ -1484,15 +1507,17 @@ static bool GenerateNpcAreas(
 
     // Query all NPC spawns on continent maps
     // with at least one service npcflag set
-    QueryResult result = WorldDatabase.Query(
-        "SELECT c.guid, c.id1, c.map, "
+    std::string col = GetCreatureEntryColumn();
+    std::string npcQuery =
+        "SELECT c.guid, c." + col + ", c.map, "
         "c.position_x, c.position_y, c.position_z "
         "FROM creature c "
         "JOIN creature_template ct "
-        "ON ct.entry = c.id1 "
+        "ON ct.entry = c." + col + " "
         "WHERE ct.npcflag > 0 "
         "AND c.map IN (0, 1, 530, 571) "
-        "ORDER BY c.guid");
+        "ORDER BY c.guid";
+    QueryResult result = WorldDatabase.Query(npcQuery);
 
     if (!result)
     {
