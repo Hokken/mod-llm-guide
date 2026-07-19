@@ -310,6 +310,9 @@ class LLMBridge:
             config, "LLMGuide.OpenRouter.BaseUrl",
             OPENROUTER_BASE_URL,
         )
+        self.openrouter_thinking = get_config_value(
+            config, "LLMGuide.OpenRouter.Thinking", ""
+        ).strip().lower()
         self.openrouter_headers = openrouter_headers(config)
         self.max_tokens = get_config_int(config, "LLMGuide.MaxTokens", 500)
         self.temperature = get_config_float(config, "LLMGuide.Temperature", 0.7)
@@ -906,6 +909,13 @@ class LLMBridge:
                     request_kwargs["reasoning_effort"] = (
                         self.google_reasoning_effort
                     )
+                elif (
+                    compatible_provider == "openrouter"
+                    and self.openrouter_thinking in ("enabled", "disabled")
+                ):
+                    request_kwargs["extra_body"] = {
+                        "thinking": {"type": self.openrouter_thinking}
+                    }
             else:
                 request_kwargs["max_completion_tokens"] = self.max_tokens
             response = client.chat.completions.create(

@@ -186,6 +186,14 @@ LLMGuide.OpenRouter.Model = anthropic/claude-haiku-4.5
 LLMGuide.OpenRouter.BaseUrl = https://openrouter.ai/api/v1
 
 #
+#   LLMGuide.OpenRouter.Thinking
+#       Optional OpenAI-compatible thinking control.
+#       Values: enabled, disabled, or empty.
+#       Leave empty for normal OpenRouter behavior.
+#
+LLMGuide.OpenRouter.Thinking =
+
+#
 #   LLMGuide.OpenRouter.HttpReferer
 #       Optional site URL for OpenRouter attribution/rankings.
 #       Leave empty if you do not want to send this header.
