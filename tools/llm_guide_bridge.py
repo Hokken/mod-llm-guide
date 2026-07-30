@@ -33,6 +33,23 @@ GOOGLE_OPENAI_BASE_URL = (
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-haiku-4.5"
 
+# Local inference servers (Ollama, LM Studio). Both expose an OpenAI-compatible
+# surface, so they reuse call_openai() exactly as Google and OpenRouter do -
+# no new transport is needed.
+#
+# The /v1 suffix matters: Ollama's native API lives at /api and does NOT
+# implement the OpenAI tool-calling schema this module depends on, so pointing
+# at /api would fail at the first question rather than at startup.
+# validate_config() rejects a base URL without it.
+OLLAMA_BASE_URL = "http://localhost:11434/v1"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:14b-instruct"
+LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
+DEFAULT_LMSTUDIO_MODEL = "qwen2.5-14b-instruct"
+# Neither server authenticates, but the openai client requires a non-empty
+# api_key, so a placeholder is sent and ignored.
+LOCAL_PLACEHOLDER_KEY = "local"
+LOCAL_PROVIDERS = ("ollama", "lmstudio")
+
 
 def resolve_model_alias(model_name: str) -> str:
     """Resolve friendly model aliases to provider model IDs."""
@@ -311,6 +328,18 @@ class LLMBridge:
             OPENROUTER_BASE_URL,
         )
         self.openrouter_headers = openrouter_headers(config)
+        self.ollama_base_url = get_config_value(
+            config, "LLMGuide.Ollama.BaseUrl", OLLAMA_BASE_URL,
+        )
+        self.ollama_model = get_config_value(
+            config, "LLMGuide.Ollama.Model", DEFAULT_OLLAMA_MODEL,
+        )
+        self.lmstudio_base_url = get_config_value(
+            config, "LLMGuide.LMStudio.BaseUrl", LMSTUDIO_BASE_URL,
+        )
+        self.lmstudio_model = get_config_value(
+            config, "LLMGuide.LMStudio.Model", DEFAULT_LMSTUDIO_MODEL,
+        )
         self.max_tokens = get_config_int(config, "LLMGuide.MaxTokens", 500)
         self.temperature = get_config_float(config, "LLMGuide.Temperature", 0.7)
         self.system_prompt = get_config_value(config, "LLMGuide.SystemPrompt",
@@ -986,6 +1015,35 @@ class LLMBridge:
             compatible_provider="openrouter",
         )
 
+    def call_local(
+        self, question: str, system_prompt: str = None,
+        memories_recent: list = None,
+    ) -> tuple:
+        """Call a local inference server through its OpenAI-compatible endpoint.
+
+        Serves both Ollama and LM Studio; they differ only in default port and
+        model-naming convention, so one implementation covers both.
+
+        compatible_provider is passed as the provider name rather than "openai"
+        so none of the Google thinking-budget or OpenRouter reasoning branches
+        in call_openai apply - a local server implements the plain OpenAI
+        surface.
+        """
+        if self.provider == "lmstudio":
+            base_url, model = self.lmstudio_base_url, self.lmstudio_model
+        else:
+            base_url, model = self.ollama_base_url, self.ollama_model
+
+        return self.call_openai(
+            question,
+            system_prompt,
+            memories_recent,
+            api_key=LOCAL_PLACEHOLDER_KEY,
+            model=model,
+            base_url=base_url,
+            compatible_provider=self.provider,
+        )
+
     def call_llm(
         self, question: str, system_prompt: str = None,
         memories_recent: list = None
@@ -1005,6 +1063,10 @@ class LLMBridge:
             )
         elif self.provider == "openrouter":
             return self.call_openrouter(
+                question, system_prompt, memories_recent
+            )
+        elif self.provider in LOCAL_PROVIDERS:
+            return self.call_local(
                 question, system_prompt, memories_recent
             )
         else:
@@ -1141,6 +1203,29 @@ class LLMBridge:
             if not self.openrouter_key:
                 logger.error("OpenRouter API key not configured (LLMGuide.OpenRouter.ApiKey)")
                 return False
+        elif self.provider in LOCAL_PROVIDERS:
+            # No API key to validate - local servers don't authenticate. Check
+            # the two things that actually go wrong instead: a missing model,
+            # and a base URL pointing at a non-OpenAI-compatible endpoint
+            # (Ollama's native /api cannot do tool calling, so it would fail at
+            # the first question instead of here).
+            label = "LMStudio" if self.provider == "lmstudio" else "Ollama"
+            model = (self.lmstudio_model if self.provider == "lmstudio"
+                     else self.ollama_model)
+            base_url = (self.lmstudio_base_url if self.provider == "lmstudio"
+                        else self.ollama_base_url)
+            if not model:
+                logger.error(
+                    "%s model not configured (LLMGuide.%s.Model)", label, label
+                )
+                return False
+            if not base_url.rstrip("/").endswith("/v1"):
+                logger.error(
+                    "LLMGuide.%s.BaseUrl must end in /v1 (the OpenAI-compatible "
+                    "endpoint); got '%s'. A native API path does not support "
+                    "tool calling, which this module requires.", label, base_url
+                )
+                return False
         else:
             logger.error(f"Unknown LLM provider: {self.provider}")
             return False
@@ -1157,6 +1242,10 @@ class LLMBridge:
             return self.google_model
         if self.provider == "openrouter":
             return self.openrouter_model
+        if self.provider == "ollama":
+            return self.ollama_model
+        if self.provider == "lmstudio":
+            return self.lmstudio_model
         return "(unknown)"
 
     def run(self):

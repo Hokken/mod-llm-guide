@@ -72,7 +72,8 @@ LLMGuide.MaxPendingPerPlayer = 3
 #
 #   LLMGuide.Provider
 #       Which LLM provider to use:
-#       "anthropic", "openai", "google", or "openrouter"
+#       "anthropic", "openai", "google", "openrouter",
+#       "ollama" or "lmstudio" (local, no API key required)
 #       Default: anthropic
 #
 LLMGuide.Provider = anthropic
@@ -184,6 +185,44 @@ LLMGuide.OpenRouter.Model = anthropic/claude-haiku-4.5
 #       Only change this if OpenRouter changes the compatibility endpoint.
 #
 LLMGuide.OpenRouter.BaseUrl = https://openrouter.ai/api/v1
+
+###################################################################################################
+# Local inference (Ollama / LM Studio)
+#
+#    Both expose an OpenAI-compatible endpoint, so no API key is required.
+#    Set LLMGuide.Provider to "ollama" or "lmstudio".
+#
+#    IMPORTANT: Azeroth Guide answers by calling tools against the game
+#    database, so the model MUST support tool/function calling reliably.
+#    Small models tend to emit malformed function arguments even when they
+#    respond fluently. Verified working: qwen2.5:14b-instruct via Ollama
+#    (returns correct function names and arguments). Reasoning/"thinking"
+#    models are not suitable.
+#
+#    LLMGuide.Ollama.BaseUrl
+#        Description: Ollama's OpenAI-compatible endpoint. Must end in /v1.
+#                     The native API at /api does NOT implement OpenAI tool
+#                     calling and will fail on the first question.
+#        Default:     http://localhost:11434/v1
+#
+#    LLMGuide.Ollama.Model
+#        Description: Model tag as shown by `ollama list`.
+#        Default:     qwen2.5:14b-instruct
+#
+#    LLMGuide.LMStudio.BaseUrl
+#        Description: LM Studio's local server endpoint. Must end in /v1.
+#        Default:     http://localhost:1234/v1
+#
+#    LLMGuide.LMStudio.Model
+#        Description: Model identifier as shown in LM Studio's server log.
+#        Default:     qwen2.5-14b-instruct
+#
+
+LLMGuide.Ollama.BaseUrl = http://localhost:11434/v1
+LLMGuide.Ollama.Model = qwen2.5:14b-instruct
+
+LLMGuide.LMStudio.BaseUrl = http://localhost:1234/v1
+LLMGuide.LMStudio.Model = qwen2.5-14b-instruct
 
 #
 #   LLMGuide.OpenRouter.HttpReferer
