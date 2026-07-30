@@ -1,6 +1,6 @@
 """NPC and creature lookup domain for mod-llm-guide."""
 
-from zone_coordinates import world_to_map_coords
+from zone_coordinates import world_to_map_coords, zone_for_position
 
 
 class GuideToolNpcMixin:
@@ -472,6 +472,7 @@ class GuideToolNpcMixin:
 
         cursor.execute(f"""
             SELECT DISTINCT ct.entry as npc_entry, ct.name as npc_name, ct.subname as title,
+                   ct.minlevel as min_level, ct.maxlevel as max_level,
                    c.position_x as pos_x, c.position_y as pos_y, c.map as map_id,
                    na.area_name
                    {dist_cols}
@@ -500,13 +501,38 @@ class GuideToolNpcMixin:
             loc = (f" in {n['area_name']}"
                    if n.get('area_name') else "")
             coords = ""
+            actual_zone = ""
             coord_zone = zone if zone_coords else self.default_zone
             if coord_zone and n['pos_x'] and n['pos_y']:
                 map_coords = world_to_map_coords(coord_zone, round(n['pos_x'], 1), round(n['pos_y'], 1))
+                if not map_coords:
+                    # Outside coord_zone, so resolve the real zone rather than
+                    # dropping the location or leaving it to be guessed.
+                    real_zone = zone_for_position(
+                        n['map_id'], n['pos_x'], n['pos_y']
+                    )
+                    if real_zone:
+                        map_coords = world_to_map_coords(
+                            real_zone, round(n['pos_x'], 1),
+                            round(n['pos_y'], 1)
+                        )
+                        actual_zone = f" in {real_zone}"
                 if map_coords:
                     coords = f" at {map_coords[0]}, {map_coords[1]}"
+            # The model reaches for find_npc on any "where/what is X" question,
+            # so include the level or a level question gets a location answer.
+            level = ""
+            if n.get('min_level'):
+                level = (
+                    f" - Level {n['min_level']}"
+                    if n['min_level'] == n.get('max_level')
+                    else f" - Level {n['min_level']}-{n['max_level']}"
+                )
             npc_link = f"[[npc:{n['npc_entry']}:{n['npc_name']}]]"
-            result += f"- {npc_link}{title}{loc}{dist_str}{coords}\n"
+            result += (
+                f"- {npc_link}{title}{level}{loc}{actual_zone}"
+                f"{dist_str}{coords}\n"
+            )
         result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
         return result
 

@@ -932,6 +932,36 @@ class GameToolExecutor(
             filter_sql = f"AND c.map = {map_id} AND c.position_x BETWEEN {loc_bottom} AND {loc_top} AND c.position_y BETWEEN {loc_right} AND {loc_left}"
         return zone_data, filter_sql
 
+    def _with_zone_widening(self, handler, tool_input: dict,
+                            zone_is_positional: bool) -> str:
+        """Run a named lookup, retrying without the zone if it found nothing.
+
+        Only widens a zone taken from the player's position, so "is X in Durotar"
+        still answers about Durotar.
+        """
+        result = handler(tool_input)
+        if not zone_is_positional:
+            return result
+        if not result.lstrip().lower().startswith("no "):
+            return result
+
+        injected = tool_input.get('zone')
+        widened = {k: v for k, v in tool_input.items() if k != 'zone'}
+        logger.info(
+            "Nothing found in auto-injected zone %r; retrying without it",
+            injected,
+        )
+        retry = handler(widened)
+        if retry.lstrip().lower().startswith("no "):
+            # Genuinely absent everywhere.
+            return retry
+        return (
+            f"{retry.rstrip()}\n"
+            f"NOTE: this is outside {injected}, where the player currently is. "
+            "Say which zone it is actually in, and do not claim it does not "
+            "exist."
+        )
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         """Execute a tool and return results as a string."""
         # Auto-inject player's zone if not specified and tool supports it
@@ -940,12 +970,31 @@ class GameToolExecutor(
             'find_quest_giver', 'get_available_quests', 'find_creature',
             'find_hunter_pet', 'get_flight_paths', 'list_zone_creatures'
         }
-        if (tool_name in zone_tools and
-                'zone' not in tool_input and
-                self.default_zone):
-            tool_input = tool_input.copy()  # Don't modify original
-            tool_input['zone'] = self.default_zone
-            logger.info(f"Auto-injected zone '{self.default_zone}' into {tool_name}")
+        # Named lookups: a zone filter turns "where is X" into "X does not exist".
+        # Still injected to pick the closest match, but a miss now retries without it.
+        named_lookup_tools = {'find_npc', 'find_creature'}
+        # True when the zone came from the player's position, not their question.
+        zone_is_positional = False
+        supplied_zone = tool_input.get('zone')
+        if tool_name in zone_tools and self.default_zone:
+            if not supplied_zone:
+                tool_input = tool_input.copy()  # Don't modify original
+                tool_input['zone'] = self.default_zone
+                zone_is_positional = True
+                logger.info(
+                    f"Auto-injected zone '{self.default_zone}' "
+                    f"into {tool_name}"
+                )
+            elif (tool_name in named_lookup_tools and
+                    supplied_zone.strip().lower() ==
+                    self.default_zone.strip().lower()):
+                # The model copies the player's zone into its own arguments unprompted,
+                # which is not the player asking about that zone.
+                zone_is_positional = True
+                logger.info(
+                    f"{tool_name} was given the player's own zone "
+                    f"'{supplied_zone}'; treating it as widenable"
+                )
 
         # Auto-inject structured player defaults when the tool can use them.
         injected_fields = []
@@ -1020,7 +1069,9 @@ class GameToolExecutor(
             elif tool_name == "find_service_npc":
                 return self._find_service_npc(tool_input)
             elif tool_name == "find_npc":
-                return self._find_npc(tool_input)
+                return self._with_zone_widening(
+                    self._find_npc, tool_input, zone_is_positional
+                )
             elif tool_name == "get_spell_info":
                 return self._get_spell_info(tool_input)
             elif tool_name == "list_spells_by_level":
@@ -1030,7 +1081,9 @@ class GameToolExecutor(
             elif tool_name == "get_available_quests":
                 return self._get_available_quests(tool_input)
             elif tool_name == "find_creature":
-                return self._find_creature(tool_input)
+                return self._with_zone_widening(
+                    self._find_creature, tool_input, zone_is_positional
+                )
             elif tool_name == "get_quest_info":
                 return self._get_quest_info(tool_input)
             elif tool_name == "get_item_info":

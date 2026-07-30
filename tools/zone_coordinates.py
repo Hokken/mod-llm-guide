@@ -450,11 +450,55 @@ def world_to_map_coords(zone_name: str, world_x: float, world_y: float) -> tuple
     map_x = (loc_left - world_y) / (loc_left - loc_right) * 100
     map_y = (loc_top - world_x) / (loc_top - loc_bottom) * 100
 
-    # Clamp to 0-100 range (point might be slightly outside zone bounds)
+    # Clamp a small overshoot, since map areas do not tile exactly.
+    # Reject anything far outside: clamping it invents a coordinate pinned to 0 or 100.
+    TOLERANCE = 5.0  # percent of zone extent
+    if not (-TOLERANCE <= map_x <= 100 + TOLERANCE and
+            -TOLERANCE <= map_y <= 100 + TOLERANCE):
+        return None
+
     map_x = max(0, min(100, map_x))
     map_y = max(0, min(100, map_y))
 
     return (round(map_x, 1), round(map_y, 1))
+
+
+def zone_for_position(map_id: int, world_x: float, world_y: float) -> str:
+    """Return the name of the zone containing a world position, or None.
+
+    Lets callers name the zone instead of leaving the model to guess it.
+
+    Zone boxes overlap - a point deep inside Elwynn also falls just inside
+    Duskwood's - so pick the zone the point sits deepest inside, not the smallest.
+    """
+    if map_id is None or world_x is None or world_y is None:
+        return None
+
+    best_name, best_depth = None, None
+    for name, (zone_map, loc_left, loc_right, loc_top, loc_bottom) in \
+            ZONE_COORDINATES.items():
+        if zone_map != map_id:
+            continue
+        if loc_left == 0 and loc_right == 0:
+            continue
+
+        lo_y, hi_y = min(loc_right, loc_left), max(loc_right, loc_left)
+        lo_x, hi_x = min(loc_bottom, loc_top), max(loc_bottom, loc_top)
+        if not (lo_y <= world_y <= hi_y and lo_x <= world_x <= hi_x):
+            continue
+
+        extent_y, extent_x = hi_y - lo_y, hi_x - lo_x
+        if extent_y <= 0 or extent_x <= 0:
+            continue
+
+        depth = min(
+            min(world_y - lo_y, hi_y - world_y) / extent_y,
+            min(world_x - lo_x, hi_x - world_x) / extent_x,
+        )
+        if best_depth is None or depth > best_depth:
+            best_name, best_depth = name, depth
+
+    return best_name.title() if best_name else None
 
 
 def extract_player_zone(context: str) -> tuple:
