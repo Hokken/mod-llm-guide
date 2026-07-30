@@ -33,6 +33,23 @@ GOOGLE_OPENAI_BASE_URL = (
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-haiku-4.5"
 
+# Local inference servers (Ollama, LM Studio). Both expose an OpenAI-compatible
+# surface, so they reuse call_openai() exactly as Google and OpenRouter do -
+# no new transport is needed.
+#
+# The /v1 suffix matters: Ollama's native API lives at /api and does NOT
+# implement the OpenAI tool-calling schema this module depends on, so pointing
+# at /api would fail at the first question rather than at startup.
+# validate_config() rejects a base URL without it.
+OLLAMA_BASE_URL = "http://localhost:11434/v1"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:14b-instruct"
+LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
+DEFAULT_LMSTUDIO_MODEL = "qwen2.5-14b-instruct"
+# Neither server authenticates, but the openai client requires a non-empty
+# api_key, so a placeholder is sent and ignored.
+LOCAL_PLACEHOLDER_KEY = "local"
+LOCAL_PROVIDERS = ("ollama", "lmstudio")
+
 
 def resolve_model_alias(model_name: str) -> str:
     """Resolve friendly model aliases to provider model IDs."""
@@ -160,6 +177,12 @@ def extract_player_defaults_from_context(
     return defaults
 
 # Setup logging
+# Windows stdout defaults to cp1252, where one stray codepoint kills the log line.
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except (AttributeError, ValueError):
+    pass  # Python < 3.7, or a stream that cannot be reconfigured
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -311,6 +334,18 @@ class LLMBridge:
             OPENROUTER_BASE_URL,
         )
         self.openrouter_headers = openrouter_headers(config)
+        self.ollama_base_url = get_config_value(
+            config, "LLMGuide.Ollama.BaseUrl", OLLAMA_BASE_URL,
+        )
+        self.ollama_model = get_config_value(
+            config, "LLMGuide.Ollama.Model", DEFAULT_OLLAMA_MODEL,
+        )
+        self.lmstudio_base_url = get_config_value(
+            config, "LLMGuide.LMStudio.BaseUrl", LMSTUDIO_BASE_URL,
+        )
+        self.lmstudio_model = get_config_value(
+            config, "LLMGuide.LMStudio.Model", DEFAULT_LMSTUDIO_MODEL,
+        )
         self.max_tokens = get_config_int(config, "LLMGuide.MaxTokens", 500)
         self.temperature = get_config_float(config, "LLMGuide.Temperature", 0.7)
         self.system_prompt = get_config_value(config, "LLMGuide.SystemPrompt",
@@ -489,6 +524,13 @@ class LLMBridge:
                 "TEXT NOT NULL",
                 after_column="question",
             )
+            add_column_if_missing(
+                cursor,
+                "llm_guide_memory",
+                "tools_used",
+                "TINYINT(1) NOT NULL DEFAULT 0",
+                after_column="response",
+            )
             conn.commit()
             cursor.close()
             conn.close()
@@ -525,7 +567,7 @@ class LLMBridge:
             self.memory_context_count + self.memory_summarize_threshold
         )
         cursor.execute("""
-            SELECT summary, question, response
+            SELECT summary, question, response, tools_used
             FROM llm_guide_memory
             WHERE character_guid = %s
             ORDER BY created_at DESC
@@ -541,16 +583,17 @@ class LLMBridge:
         # Build recent list as dicts; skip entries with empty Q&A
         # (legacy rows before this migration won't have Q&A text)
         recent = []
-        for summary, question, response in reversed(recent_rows):
+        for summary, question, response, tools_used in reversed(recent_rows):
             if question and response:
                 recent.append({
                     'question': question,
                     'response': response,
+                    'tools_used': bool(tools_used),
                 })
 
         # Extract topics from older memories using summary field
         older_topics = []
-        for summary, question, response in older_rows:
+        for summary, question, response, tools_used in older_rows:
             topic = self._extract_topic(summary)
             if topic and topic not in older_topics:
                 older_topics.append(topic)
@@ -593,9 +636,67 @@ class LLMBridge:
 
         return memory[:30] if len(memory) > 30 else memory
 
+    # Conversational openers that need no database lookup.
+    SMALL_TALK = (
+        'hello', 'hi', 'hey', 'greetings', 'thanks', 'thank you', 'ta',
+        'cheers', 'bye', 'goodbye', 'cya', 'lol', 'ok', 'okay', 'yes', 'no',
+        'who are you', 'what are you', 'how are you', 'what can you do',
+        'help', 'sorry', 'nvm', 'nevermind', 'never mind',
+    )
+
+    def question_needs_lookup(self, question: str) -> bool:
+        """True if this question must be grounded in a database lookup.
+
+        Biased towards True: a needless lookup is harmless, an invented fact is not.
+        """
+        q = (question or '').strip().lower().rstrip('?!.,')
+        if not q:
+            return False
+        if q in self.SMALL_TALK:
+            return False
+        # Catches "hi there", "thanks!" and similar.
+        if len(q.split()) <= 3:
+            for phrase in self.SMALL_TALK:
+                if q.startswith(phrase):
+                    return False
+        return True
+
+    def partition_memories(self, memories_recent: list) -> tuple:
+        """Split history into database-verified turns and unverified ones.
+
+        Returns: (verified_turns, unverified_pairs)
+        """
+        verified, unverified = [], []
+        for mem in memories_recent or []:
+            # Legacy rows have no tools_used value - treat those as unverified.
+            if mem.get('tools_used'):
+                verified.append(mem)
+            else:
+                unverified.append(mem)
+        return verified, unverified
+
+    def annotate_system_prompt(
+        self, system_prompt: str, unverified: list
+    ) -> str:
+        """Note what was asked before, without restating unverified answers.
+
+        Including the answers leaked invented coordinates into later ones, even
+        when labelled unverified, so only the questions are kept.
+        """
+        if not unverified:
+            return system_prompt
+        asked = "; ".join(m['question'] for m in unverified)
+        return (
+            f"{system_prompt}\n\n"
+            "Earlier in this conversation the player asked about: "
+            f"{asked}. Those answers were not database-verified, so look up "
+            "anything you need again rather than relying on what was said."
+        )
+
     def store_memory(
         self, cursor, char_guid: int, char_name: str,
-        summary: str, question: str = '', response: str = ''
+        summary: str, question: str = '', response: str = '',
+        tools_used: bool = False
     ):
         """Store a conversation memory with full Q&A for replay."""
         if not self.memory_enabled:
@@ -604,10 +705,10 @@ class LLMBridge:
         cursor.execute("""
             INSERT INTO llm_guide_memory
                 (character_guid, character_name, question, response,
-                 summary)
-            VALUES (%s, %s, %s, %s, %s)
+                 summary, tools_used)
+            VALUES (%s, %s, %s, %s, %s, %s)
         """, (char_guid, char_name, question, response,
-              summary[:500]))
+              summary[:500], 1 if tools_used else 0))
 
         # Prune old memories if over limit
         self.prune_memories(cursor, char_guid)
@@ -728,33 +829,42 @@ class LLMBridge:
 
         client = anthropic.Anthropic(api_key=self.anthropic_key)
 
+        # Replay only verified answers as turns; the rest go in the system prompt.
+        verified, unverified = self.partition_memories(memories_recent)
+        system_prompt = self.annotate_system_prompt(
+            system_prompt or self.system_prompt, unverified
+        )
+
         # Build messages with conversation history as real turns
         messages = []
-        if memories_recent:
-            for mem in memories_recent:
-                messages.append({
-                    "role": "user",
-                    "content": mem['question']
-                })
-                messages.append({
-                    "role": "assistant",
-                    "content": mem['response']
-                })
+        for mem in verified:
+            messages.append({
+                "role": "user",
+                "content": mem['question']
+            })
+            messages.append({
+                "role": "assistant",
+                "content": mem['response']
+            })
         messages.append({"role": "user", "content": question})
         total_tokens = 0
         max_tool_rounds = 3  # Limit tool use iterations
         tools_were_used = False  # Track if any tools were called
 
+        force_first_tool = self.question_needs_lookup(question)
         for round_num in range(max_tool_rounds + 1):
-            # Make API call with tools
-            response = client.messages.create(
-                model=self.anthropic_model,
-                max_tokens=self.max_tokens,
-                system=system_prompt or self.system_prompt,
-                messages=messages,
-                tools=GAME_TOOLS,
-                temperature=self.temperature
-            )
+            # Make API call with tools. See call_openai for why round 0 is forced.
+            create_kwargs = {
+                "model": self.anthropic_model,
+                "max_tokens": self.max_tokens,
+                "system": system_prompt or self.system_prompt,
+                "messages": messages,
+                "tools": GAME_TOOLS,
+                "temperature": self.temperature,
+            }
+            if force_first_tool and round_num == 0:
+                create_kwargs["tool_choice"] = {"type": "any"}
+            response = client.messages.create(**create_kwargs)
 
             total_tokens += response.usage.input_tokens + response.usage.output_tokens
 
@@ -832,21 +942,23 @@ class LLMBridge:
         client = openai.OpenAI(**client_kwargs)
         model = model or self.openai_model
 
-        # Build messages with conversation history as real turns
+        # Replay only verified answers as turns; the rest go in the system prompt.
+        verified, unverified = self.partition_memories(memories_recent)
         messages = [
             {"role": "system",
-             "content": system_prompt or self.system_prompt},
+             "content": self.annotate_system_prompt(
+                 system_prompt or self.system_prompt, unverified
+             )},
         ]
-        if memories_recent:
-            for mem in memories_recent:
-                messages.append({
-                    "role": "user",
-                    "content": mem['question']
-                })
-                messages.append({
-                    "role": "assistant",
-                    "content": mem['response']
-                })
+        for mem in verified:
+            messages.append({
+                "role": "user",
+                "content": mem['question']
+            })
+            messages.append({
+                "role": "assistant",
+                "content": mem['response']
+            })
         messages.append({"role": "user", "content": question})
         total_tokens = 0
         max_tool_rounds = 3  # Limit tool use iterations
@@ -865,6 +977,7 @@ class LLMBridge:
                     self.google_thinking_budget,
                 )
 
+        force_first_tool = self.question_needs_lookup(question)
         for round_num in range(max_tool_rounds + 1):
             # Make API call with tools
             request_kwargs = {
@@ -873,6 +986,10 @@ class LLMBridge:
                 "tools": GAME_TOOLS_OPENAI,
                 "temperature": self.temperature,
             }
+            # Require a tool on round 0 so lookups cannot bypass the database.
+            # Later rounds stay unforced so the model can write the answer.
+            if force_first_tool and round_num == 0:
+                request_kwargs["tool_choice"] = "required"
             if compatible_provider in ("google", "openrouter"):
                 multiplier = max(
                     1.0,
@@ -908,15 +1025,57 @@ class LLMBridge:
                     )
             else:
                 request_kwargs["max_completion_tokens"] = self.max_tokens
-            response = client.chat.completions.create(
-                **request_kwargs
-            )
+            try:
+                response = client.chat.completions.create(
+                    **request_kwargs
+                )
+            except openai.BadRequestError:
+                # Not every OpenAI-compatible server implements tool_choice.
+                if request_kwargs.pop("tool_choice", None) is None:
+                    raise
+                logger.warning(
+                    "Provider %r rejected tool_choice=required; falling back "
+                    "to unforced tool use (answers may be less reliable)",
+                    compatible_provider,
+                )
+                force_first_tool = False
+                response = client.chat.completions.create(
+                    **request_kwargs
+                )
 
             usage = getattr(response, "usage", None)
             total_tokens += int(
                 getattr(usage, "total_tokens", 0) or 0
             )
             message = response.choices[0].message
+
+            # Replayed prose answers teach the model to answer in prose, tools ignored.
+            # Holds even when those answers were correct and tool-derived.
+            # Measured on qwen2.5:32b: 0/5 lookups called a tool with history, 4/5 without.
+            # Ollama accepts tool_choice=required and ignores it, so drop the history.
+            if (
+                force_first_tool
+                and round_num == 0
+                and not message.tool_calls
+                and len(messages) > 2
+            ):
+                logger.info(
+                    "No tool call on a lookup question; retrying without "
+                    "replayed history"
+                )
+                messages = [messages[0], {"role": "user", "content": question}]
+                request_kwargs["messages"] = messages
+                response = client.chat.completions.create(**request_kwargs)
+                usage = getattr(response, "usage", None)
+                total_tokens += int(getattr(usage, "total_tokens", 0) or 0)
+                message = response.choices[0].message
+                if message.tool_calls:
+                    logger.info("Retry without history produced a tool call")
+                else:
+                    logger.warning(
+                        "Still no tool call after dropping history; the answer "
+                        "to %r is not database-verified", question[:60]
+                    )
 
             # Check if we need to handle tool calls
             if message.tool_calls:
@@ -986,6 +1145,35 @@ class LLMBridge:
             compatible_provider="openrouter",
         )
 
+    def call_local(
+        self, question: str, system_prompt: str = None,
+        memories_recent: list = None,
+    ) -> tuple:
+        """Call a local inference server through its OpenAI-compatible endpoint.
+
+        Serves both Ollama and LM Studio; they differ only in default port and
+        model-naming convention, so one implementation covers both.
+
+        compatible_provider is passed as the provider name rather than "openai"
+        so none of the Google thinking-budget or OpenRouter reasoning branches
+        in call_openai apply - a local server implements the plain OpenAI
+        surface.
+        """
+        if self.provider == "lmstudio":
+            base_url, model = self.lmstudio_base_url, self.lmstudio_model
+        else:
+            base_url, model = self.ollama_base_url, self.ollama_model
+
+        return self.call_openai(
+            question,
+            system_prompt,
+            memories_recent,
+            api_key=LOCAL_PLACEHOLDER_KEY,
+            model=model,
+            base_url=base_url,
+            compatible_provider=self.provider,
+        )
+
     def call_llm(
         self, question: str, system_prompt: str = None,
         memories_recent: list = None
@@ -1005,6 +1193,10 @@ class LLMBridge:
             )
         elif self.provider == "openrouter":
             return self.call_openrouter(
+                question, system_prompt, memories_recent
+            )
+        elif self.provider in LOCAL_PROVIDERS:
+            return self.call_local(
                 question, system_prompt, memories_recent
             )
         else:
@@ -1115,7 +1307,8 @@ class LLMBridge:
             logger.info(f"Storing memory: {summary[:100]}...")
             self.store_memory(
                 cursor, char_guid, char_name, summary,
-                question=question, response=response
+                question=question, response=response,
+                tools_used=tools_used
             )
 
             logger.info(f"Request {request_id} completed ({tokens} tokens)")
@@ -1141,6 +1334,29 @@ class LLMBridge:
             if not self.openrouter_key:
                 logger.error("OpenRouter API key not configured (LLMGuide.OpenRouter.ApiKey)")
                 return False
+        elif self.provider in LOCAL_PROVIDERS:
+            # No API key to validate - local servers don't authenticate. Check
+            # the two things that actually go wrong instead: a missing model,
+            # and a base URL pointing at a non-OpenAI-compatible endpoint
+            # (Ollama's native /api cannot do tool calling, so it would fail at
+            # the first question instead of here).
+            label = "LMStudio" if self.provider == "lmstudio" else "Ollama"
+            model = (self.lmstudio_model if self.provider == "lmstudio"
+                     else self.ollama_model)
+            base_url = (self.lmstudio_base_url if self.provider == "lmstudio"
+                        else self.ollama_base_url)
+            if not model:
+                logger.error(
+                    "%s model not configured (LLMGuide.%s.Model)", label, label
+                )
+                return False
+            if not base_url.rstrip("/").endswith("/v1"):
+                logger.error(
+                    "LLMGuide.%s.BaseUrl must end in /v1 (the OpenAI-compatible "
+                    "endpoint); got '%s'. A native API path does not support "
+                    "tool calling, which this module requires.", label, base_url
+                )
+                return False
         else:
             logger.error(f"Unknown LLM provider: {self.provider}")
             return False
@@ -1157,6 +1373,10 @@ class LLMBridge:
             return self.google_model
         if self.provider == "openrouter":
             return self.openrouter_model
+        if self.provider == "ollama":
+            return self.ollama_model
+        if self.provider == "lmstudio":
+            return self.lmstudio_model
         return "(unknown)"
 
     def run(self):

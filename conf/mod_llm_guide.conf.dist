@@ -72,7 +72,8 @@ LLMGuide.MaxPendingPerPlayer = 3
 #
 #   LLMGuide.Provider
 #       Which LLM provider to use:
-#       "anthropic", "openai", "google", or "openrouter"
+#       "anthropic", "openai", "google", "openrouter",
+#       "ollama" or "lmstudio" (local, no API key required)
 #       Default: anthropic
 #
 LLMGuide.Provider = anthropic
@@ -185,6 +186,44 @@ LLMGuide.OpenRouter.Model = anthropic/claude-haiku-4.5
 #
 LLMGuide.OpenRouter.BaseUrl = https://openrouter.ai/api/v1
 
+###################################################################################################
+# Local inference (Ollama / LM Studio)
+#
+#    Both expose an OpenAI-compatible endpoint, so no API key is required.
+#    Set LLMGuide.Provider to "ollama" or "lmstudio".
+#
+#    IMPORTANT: Azeroth Guide answers by calling tools against the game
+#    database, so the model MUST support tool/function calling reliably.
+#    Small models tend to emit malformed function arguments even when they
+#    respond fluently. Verified working: qwen2.5:14b-instruct via Ollama
+#    (returns correct function names and arguments). Reasoning/"thinking"
+#    models are not suitable.
+#
+#    LLMGuide.Ollama.BaseUrl
+#        Description: Ollama's OpenAI-compatible endpoint. Must end in /v1.
+#                     The native API at /api does NOT implement OpenAI tool
+#                     calling and will fail on the first question.
+#        Default:     http://localhost:11434/v1
+#
+#    LLMGuide.Ollama.Model
+#        Description: Model tag as shown by `ollama list`.
+#        Default:     qwen2.5:14b-instruct
+#
+#    LLMGuide.LMStudio.BaseUrl
+#        Description: LM Studio's local server endpoint. Must end in /v1.
+#        Default:     http://localhost:1234/v1
+#
+#    LLMGuide.LMStudio.Model
+#        Description: Model identifier as shown in LM Studio's server log.
+#        Default:     qwen2.5-14b-instruct
+#
+
+LLMGuide.Ollama.BaseUrl = http://localhost:11434/v1
+LLMGuide.Ollama.Model = qwen2.5:14b-instruct
+
+LLMGuide.LMStudio.BaseUrl = http://localhost:1234/v1
+LLMGuide.LMStudio.Model = qwen2.5-14b-instruct
+
 #
 #   LLMGuide.OpenRouter.HttpReferer
 #       Optional site URL for OpenRouter attribution/rankings.
@@ -229,7 +268,7 @@ LLMGuide.DistanceUnit = yards
 #       Use \n for newlines. Keep it concise to save tokens.
 #       Default: See below
 #
-LLMGuide.SystemPrompt = You are the Azeroth Guide for WoW WotLK (3.3.5). RESPONSE LENGTH: Match your answer length to question complexity. Simple questions (where to buy X, what level for Y) get 1-2 sentence answers. Only elaborate for complex questions about builds, strategies, or mechanics. Never pad responses with unnecessary context or explanations. Be direct. Use WoW terms. Level cap 80, Northrend endgame. CRITICAL: Plain text only, single paragraph, no line breaks, no markdown, no asterisks, no bullet points, no lists. When tool results include distance, direction, and coordinates (e.g. ~120 m north at 57.1, 61.3), ALWAYS include ALL of this info in your response — distance, direction, AND coordinates.
+LLMGuide.SystemPrompt = You are the Azeroth Guide for WoW WotLK (3.3.5). RESPONSE LENGTH: Match your answer length to question complexity. Simple questions (where to buy X, what level for Y) get 1-2 sentence answers. Only elaborate for complex questions about builds, strategies, or mechanics. Never pad responses with unnecessary context or explanations. Be direct. Use WoW terms. Level cap 80, Northrend endgame. CRITICAL: Plain text only, single paragraph, no line breaks, no markdown, no asterisks, no bullet points, no lists. When a tool result includes distance, direction and coordinates, ALWAYS repeat all three in your response, copying the exact numbers the tool returned. Never invent or estimate a distance, direction or coordinate pair, and never reuse numbers from these instructions or from earlier in the conversation.
 
 ###############################################################################
 # DATABASE SETTINGS (Used by Python bridge)
