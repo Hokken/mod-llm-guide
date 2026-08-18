@@ -95,6 +95,21 @@ def convert_tools_to_openai_format(anthropic_tools: list) -> list:
 GAME_TOOLS_OPENAI = convert_tools_to_openai_format(GAME_TOOLS)
 
 
+def clean_final_response(text: str) -> str:
+    """Remove provider-only reasoning wrappers from player-visible text."""
+    cleaned = (text or "").strip()
+    cleaned = re.sub(
+        r"^<think>.*?</think>\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    cleaned = re.sub(
+        r"^</think>\s*", "", cleaned, flags=re.IGNORECASE
+    )
+    return cleaned.strip()
+
+
 def extract_zone_from_context(char_context: str) -> str:
     """Extract the zone name from character context string.
 
@@ -311,7 +326,23 @@ class LLMBridge:
             OPENROUTER_BASE_URL,
         )
         self.openrouter_headers = openrouter_headers(config)
+        self.openai_compatible_disable_thinking = (
+            get_config_int(
+                config, "LLMGuide.OpenAICompatible.DisableThinking", 0
+            ) == 1
+        )
+        self.openai_compatible_reasoning_control = get_config_value(
+            config,
+            "LLMGuide.OpenAICompatible.ReasoningControl",
+            "thinking_disabled",
+        ).strip().lower()
         self.max_tokens = get_config_int(config, "LLMGuide.MaxTokens", 500)
+        self.truncation_retry_max_tokens = max(
+            self.max_tokens,
+            get_config_int(
+                config, "LLMGuide.TruncationRetryMaxTokens", 1600
+            ),
+        )
         self.temperature = get_config_float(config, "LLMGuide.Temperature", 0.7)
         self.system_prompt = get_config_value(config, "LLMGuide.SystemPrompt",
             "You are a helpful WoW guide. Be concise.")
@@ -866,57 +897,135 @@ class LLMBridge:
                 )
 
         for round_num in range(max_tool_rounds + 1):
-            # Make API call with tools
-            request_kwargs = {
-                "model": model,
-                "messages": messages,
-                "tools": GAME_TOOLS_OPENAI,
-                "temperature": self.temperature,
-            }
-            if compatible_provider in ("google", "openrouter"):
-                multiplier = max(
-                    1.0,
-                    min(
-                        self.google_max_tokens_multiplier
-                        if compatible_provider == "google"
-                        else 1.0,
-                        8.0,
+            # The final round is synthesis-only. This prevents a model from
+            # spending the last allowed round starting another lookup.
+            force_final_answer = round_num == max_tool_rounds
+            if force_final_answer:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Give the final answer now using the player context "
+                        "and tool results already provided. Do not call more "
+                        "tools and do not announce another lookup."
                     ),
-                )
-                request_kwargs["max_tokens"] = int(
-                    self.max_tokens * multiplier
-                )
-                if compatible_provider == "google" and google_thinking_config:
-                    request_kwargs["extra_body"] = {
-                        "extra_body": {
-                            "google": {
-                                "thinking_config": (
-                                    google_thinking_config
-                                ),
-                            },
-                        },
-                    }
-                elif (
-                    compatible_provider == "google"
-                    and
-                    self.google_reasoning_effort
-                    and self.google_reasoning_effort
-                    not in ("0", "none", "off", "disabled")
-                ):
-                    request_kwargs["reasoning_effort"] = (
-                        self.google_reasoning_effort
-                    )
-            else:
-                request_kwargs["max_completion_tokens"] = self.max_tokens
-            response = client.chat.completions.create(
-                **request_kwargs
-            )
+                })
 
-            usage = getattr(response, "usage", None)
-            total_tokens += int(
-                getattr(usage, "total_tokens", 0) or 0
-            )
-            message = response.choices[0].message
+            message = None
+            request_token_limit = self.max_tokens
+
+            # Retry the same round once when the provider exhausts its output
+            # budget or returns no usable text/tool call. A truncated tool
+            # call must never be mistaken for a completed guide answer.
+            for attempt in range(2):
+                request_kwargs = {
+                    "model": model,
+                    "messages": messages,
+                    "tools": GAME_TOOLS_OPENAI,
+                    "temperature": self.temperature,
+                }
+                if force_final_answer:
+                    request_kwargs["tool_choice"] = "none"
+
+                if compatible_provider in ("google", "openrouter"):
+                    multiplier = max(
+                        1.0,
+                        min(
+                            self.google_max_tokens_multiplier
+                            if compatible_provider == "google"
+                            else 1.0,
+                            8.0,
+                        ),
+                    )
+                    request_kwargs["max_tokens"] = int(
+                        request_token_limit * multiplier
+                    )
+                    if compatible_provider == "google" and google_thinking_config:
+                        request_kwargs["extra_body"] = {
+                            "extra_body": {
+                                "google": {
+                                    "thinking_config": (
+                                        google_thinking_config
+                                    ),
+                                },
+                            },
+                        }
+                    elif (
+                        compatible_provider == "google"
+                        and self.google_reasoning_effort
+                        and self.google_reasoning_effort
+                        not in ("0", "none", "off", "disabled")
+                    ):
+                        request_kwargs["reasoning_effort"] = (
+                            self.google_reasoning_effort
+                        )
+                    elif (
+                        compatible_provider == "openrouter"
+                        and self.openai_compatible_disable_thinking
+                    ):
+                        if self.openai_compatible_reasoning_control == "reasoning_none":
+                            request_kwargs["extra_body"] = {
+                                "reasoning": {"effort": "none"}
+                            }
+                        elif self.openai_compatible_reasoning_control == "thinking_disabled":
+                            request_kwargs["extra_body"] = {
+                                "thinking": {"type": "disabled"}
+                            }
+                        elif self.openai_compatible_reasoning_control not in ("omit", ""):
+                            logger.warning(
+                                "Unknown LLMGuide.OpenAICompatible.ReasoningControl=%r; omitting reasoning control",
+                                self.openai_compatible_reasoning_control,
+                            )
+                else:
+                    request_kwargs["max_completion_tokens"] = (
+                        request_token_limit
+                    )
+
+                response = client.chat.completions.create(**request_kwargs)
+                usage = getattr(response, "usage", None)
+                total_tokens += int(
+                    getattr(usage, "total_tokens", 0) or 0
+                )
+                choice = response.choices[0]
+                message = choice.message
+                finish_reason = getattr(choice, "finish_reason", None)
+                content = message.content or ""
+                tool_calls = message.tool_calls or []
+                reasoning_content = getattr(
+                    message, "reasoning_content", ""
+                ) or ""
+                logger.info(
+                    "LLM round=%s attempt=%s finish_reason=%s "
+                    "content_chars=%s tool_calls=%s reasoning_chars=%s "
+                    "prompt_tokens=%s completion_tokens=%s",
+                    round_num + 1,
+                    attempt + 1,
+                    finish_reason,
+                    len(content),
+                    len(tool_calls),
+                    len(reasoning_content),
+                    getattr(usage, "prompt_tokens", 0) or 0,
+                    getattr(usage, "completion_tokens", 0) or 0,
+                )
+
+                unusable = not content.strip() and not tool_calls
+                if finish_reason != "length" and not unusable:
+                    break
+
+                if attempt == 0:
+                    request_token_limit = min(
+                        self.truncation_retry_max_tokens,
+                        max(request_token_limit * 2, 600),
+                    )
+                    logger.warning(
+                        "Retrying LLM round after %s with max tokens=%s",
+                        "truncation" if finish_reason == "length" else "empty response",
+                        request_token_limit,
+                    )
+                    continue
+
+                raise RuntimeError(
+                    "LLM returned a truncated or empty response twice"
+                )
 
             # Check if we need to handle tool calls
             if message.tool_calls:
@@ -948,7 +1057,7 @@ class LLMBridge:
                     })
             else:
                 # No more tool calls - return final text response
-                text = message.content or ""
+                text = clean_final_response(message.content or "")
                 return text, total_tokens, tools_were_used
 
         # If we hit max rounds, return whatever we have
@@ -1076,17 +1185,25 @@ class LLMBridge:
                 else "yards"
             )
             system_prompt += (
-                "\n\nYou have access to tools that "
-                "query the ACTUAL game database. "
-                "ALWAYS use them for ANY factual "
-                "game question — quests, items, "
-                "NPCs, vendors, trainers, spells, "
-                "dungeons, or gear. NEVER answer "
-                "from memory when a tool can verify "
-                "the facts. Your training data may "
-                "be wrong or from a different game "
-                "version. The database is the source "
-                "of truth for this 3.3.5a server.\n"
+                "\n\nYou have access to tools that query the ACTUAL game "
+                "database. Answer directly when the requested fact is "
+                "already explicit in Current player info. Otherwise, use "
+                "a relevant tool for factual game questions it can verify "
+                "(quests, items, NPCs, vendors, trainers, spells, dungeons, "
+                "or gear). Never guess from general training data when a "
+                "tool can verify the answer. Never announce that you are "
+                "about to look something up: call the tool immediately. "
+                "After receiving sufficient tool results, stop calling tools "
+                "and give a substantive final answer. If no relevant tool "
+                "exists, answer from Current player info and clearly state "
+                "what cannot be verified. Current level, class, race, zone, "
+                "gold, honor, professions, talent spec, and equipped items "
+                "are live facts already supplied in Current player info; do "
+                "not call tools merely to rediscover them. No tool inspects "
+                "the live character, so never substitute unrelated spell, "
+                "quest, zone, trainer, or vendor lookups when evaluating the "
+                "player's current spec or equipment. The database is the source of "
+                "truth for this 3.3.5a server.\n"
                 "When reporting distances, ALWAYS "
                 f"use {unit_label}. Never mix units."
             )
