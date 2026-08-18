@@ -303,7 +303,10 @@ Key settings in `mod_llm_guide.conf`:
 | `LLMGuide.Anthropic.ApiKey` | -- | Your Anthropic API key |
 | `LLMGuide.OpenAI.ApiKey` | -- | Your OpenAI API key |
 | `LLMGuide.Google.ApiKey` | -- | Your Google Gemini API key |
-| `LLMGuide.OpenRouter.ApiKey` | -- | Your OpenRouter API key |
+| `LLMGuide.OpenRouter.ApiKey` | -- | Your OpenRouter API key, or the key for another OpenAI-compatible endpoint |
+| `LLMGuide.OpenRouter.BaseUrl` | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint URL |
+| `LLMGuide.OpenAICompatible.DisableThinking` | 0 | Request non-reasoning mode for the OpenAI-compatible provider |
+| `LLMGuide.OpenAICompatible.ReasoningControl` | `thinking_disabled` | Use `reasoning_none` for OpenCode Go DeepSeek V4 Flash |
 | `LLMGuide.Database.Host` | localhost | Use `ac-database` for Docker |
 | `LLMGuide.CooldownSeconds` | 10 | Seconds between questions |
 | `LLMGuide.MaxTokens` | 300 | Max response tokens |

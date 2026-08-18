@@ -311,6 +311,16 @@ class LLMBridge:
             OPENROUTER_BASE_URL,
         )
         self.openrouter_headers = openrouter_headers(config)
+        self.openai_compatible_disable_thinking = (
+            get_config_int(
+                config, "LLMGuide.OpenAICompatible.DisableThinking", 0
+            ) == 1
+        )
+        self.openai_compatible_reasoning_control = get_config_value(
+            config,
+            "LLMGuide.OpenAICompatible.ReasoningControl",
+            "thinking_disabled",
+        ).strip().lower()
         self.max_tokens = get_config_int(config, "LLMGuide.MaxTokens", 500)
         self.temperature = get_config_float(config, "LLMGuide.Temperature", 0.7)
         self.system_prompt = get_config_value(config, "LLMGuide.SystemPrompt",
@@ -906,6 +916,26 @@ class LLMBridge:
                     request_kwargs["reasoning_effort"] = (
                         self.google_reasoning_effort
                     )
+                elif (
+                    compatible_provider == "openrouter"
+                    and self.openai_compatible_disable_thinking
+                ):
+                    if self.openai_compatible_reasoning_control == "reasoning_none":
+                        # OpenCode Go's DeepSeek chat endpoint accepts this
+                        # OpenAI-compatible request extension. It prevents
+                        # hidden reasoning from consuming the response budget.
+                        request_kwargs["extra_body"] = {
+                            "reasoning": {"effort": "none"}
+                        }
+                    elif self.openai_compatible_reasoning_control == "thinking_disabled":
+                        request_kwargs["extra_body"] = {
+                            "thinking": {"type": "disabled"}
+                        }
+                    elif self.openai_compatible_reasoning_control not in ("omit", ""):
+                        logger.warning(
+                            "Unknown LLMGuide.OpenAICompatible.ReasoningControl=%r; omitting reasoning control",
+                            self.openai_compatible_reasoning_control,
+                        )
             else:
                 request_kwargs["max_completion_tokens"] = self.max_tokens
             response = client.chat.completions.create(

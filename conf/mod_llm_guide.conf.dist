@@ -72,7 +72,9 @@ LLMGuide.MaxPendingPerPlayer = 3
 #
 #   LLMGuide.Provider
 #       Which LLM provider to use:
-#       "anthropic", "openai", "google", or "openrouter"
+#       "anthropic", "openai", "google", or "openrouter". The
+#       "openrouter" client is also suitable for another OpenAI-compatible
+#       endpoint when its BaseUrl is changed below.
 #       Default: anthropic
 #
 LLMGuide.Provider = anthropic
@@ -198,6 +200,30 @@ LLMGuide.OpenRouter.HttpReferer =
 #       Leave empty if you do not want to send this header.
 #
 LLMGuide.OpenRouter.Title =
+
+###############################################################################
+# OPENAI-COMPATIBLE ENDPOINT SETTINGS (Used by Python bridge)
+###############################################################################
+
+#
+#   LLMGuide.OpenAICompatible.DisableThinking
+#       Request non-reasoning mode for the OpenRouter/OpenAI-compatible
+#       provider. This is useful for endpoints whose hidden reasoning tokens
+#       otherwise consume the guide response budget.
+#       Default: 0 (disabled)
+#
+LLMGuide.OpenAICompatible.DisableThinking = 0
+
+#
+#   LLMGuide.OpenAICompatible.ReasoningControl
+#       Wire-format extension to use when DisableThinking = 1:
+#       "thinking_disabled" sends {"thinking":{"type":"disabled"}}
+#       "reasoning_none" sends {"reasoning":{"effort":"none"}}
+#       "omit" sends neither extension.
+#       Choose the option documented by your compatible endpoint.
+#       Default: thinking_disabled
+#
+LLMGuide.OpenAICompatible.ReasoningControl = thinking_disabled
 
 #
 #   LLMGuide.MaxTokens
