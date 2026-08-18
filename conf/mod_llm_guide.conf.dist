@@ -234,6 +234,15 @@ LLMGuide.OpenAICompatible.ReasoningControl = thinking_disabled
 LLMGuide.MaxTokens = 300
 
 #
+#   LLMGuide.TruncationRetryMaxTokens
+#       Maximum output-token budget for one automatic retry when an
+#       OpenAI-compatible response is truncated or empty. The normal
+#       MaxTokens value remains the first-attempt budget.
+#       Default: 1600
+#
+LLMGuide.TruncationRetryMaxTokens = 1600
+
+#
 #   LLMGuide.Temperature
 #       LLM temperature (0.0 = focused, 1.0 = creative)
 #       Default: 0.7

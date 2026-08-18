@@ -310,6 +310,7 @@ Key settings in `mod_llm_guide.conf`:
 | `LLMGuide.Database.Host` | localhost | Use `ac-database` for Docker |
 | `LLMGuide.CooldownSeconds` | 10 | Seconds between questions |
 | `LLMGuide.MaxTokens` | 300 | Max response tokens |
+| `LLMGuide.TruncationRetryMaxTokens` | 1600 | Bounded retry budget for truncated or empty compatible-provider responses |
 | `LLMGuide.Temperature` | 0.7 | Creativity (0.0-1.0) |
 | `LLMGuide.DistanceUnit` | yards | `yards` or `meters` |
 | `LLMGuide.Memory.Enable` | 1 | Remember conversations |
