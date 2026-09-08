@@ -8,7 +8,11 @@ from unittest.mock import patch
 TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
-from llm_guide_bridge import LLMBridge, clean_final_response
+from llm_guide_bridge import (
+    LLMBridge,
+    clean_final_response,
+    openrouter_headers,
+)
 
 
 def response(content, finish_reason="stop", tool_calls=None, total_tokens=10):
@@ -48,6 +52,26 @@ class FakeClient:
 
 
 class BridgeReliabilityTests(unittest.TestCase):
+    def test_opencode_go_gets_required_session_headers(self):
+        headers = openrouter_headers({
+            "LLMGuide.OpenRouter.BaseUrl": (
+                "https://opencode.ai/zen/go/v1"
+            ),
+        })
+        self.assertEqual(
+            headers["x-opencode-session"], "mod-llm-guide"
+        )
+        self.assertEqual(
+            headers["User-Agent"], "mod-llm-guide/1.0"
+        )
+
+    def test_non_go_endpoint_has_no_session_headers(self):
+        self.assertEqual(openrouter_headers({
+            "LLMGuide.OpenRouter.BaseUrl": (
+                "https://openrouter.ai/api/v1"
+            ),
+        }), {})
+
     def test_cleans_provider_thinking_wrappers(self):
         self.assertEqual(
             clean_final_response("</think>Final answer."),

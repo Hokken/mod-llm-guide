@@ -54,7 +54,7 @@ def resolve_model_alias(model_name: str) -> str:
 
 
 def openrouter_headers(config: dict) -> dict:
-    """Build optional OpenRouter app-attribution headers."""
+    """Build attribution and compatible-provider routing headers."""
     headers = {}
     referer = get_config_value(
         config, "LLMGuide.OpenRouter.HttpReferer", ""
@@ -66,6 +66,22 @@ def openrouter_headers(config: dict) -> dict:
         headers["HTTP-Referer"] = referer
     if title:
         headers["X-OpenRouter-Title"] = title
+    base_url = get_config_value(
+        config, "LLMGuide.OpenRouter.BaseUrl", ""
+    ).strip().lower()
+    if "opencode.ai/zen/go/" in base_url.rstrip("/") + "/":
+        session_id = get_config_value(
+            config,
+            "LLMGuide.OpenAICompatible.SessionId",
+            "mod-llm-guide",
+        ).strip() or "mod-llm-guide"
+        user_agent = get_config_value(
+            config,
+            "LLMGuide.OpenAICompatible.UserAgent",
+            "mod-llm-guide/1.0",
+        ).strip() or "mod-llm-guide/1.0"
+        headers.setdefault("x-opencode-session", session_id)
+        headers.setdefault("User-Agent", user_agent)
     return headers
 
 

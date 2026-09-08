@@ -225,6 +225,11 @@ LLMGuide.OpenAICompatible.DisableThinking = 0
 #
 LLMGuide.OpenAICompatible.ReasoningControl = thinking_disabled
 
+# Stable routing identity required by OpenCode Go. These values are sent
+# only when OpenRouter.BaseUrl points at the OpenCode Go endpoint.
+LLMGuide.OpenAICompatible.SessionId = mod-llm-guide
+LLMGuide.OpenAICompatible.UserAgent = mod-llm-guide/1.0
+
 #
 #   LLMGuide.MaxTokens
 #       Maximum tokens in the LLM response
