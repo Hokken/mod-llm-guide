@@ -229,6 +229,25 @@ class GuideToolNpcMixin:
         result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
         return result
 
+    def _unsold_exact_item(self, item_name):
+        """Return the exactly named item when no vendor sells it."""
+        conn = self.get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT it.entry, it.name, it.Quality,
+                   EXISTS(SELECT 1 FROM npc_vendor nv
+                          WHERE nv.item = it.entry) AS sold
+            FROM item_template it
+            WHERE LOWER(it.name) = %s
+            ORDER BY it.entry
+        """, (item_name.strip().lower(),))
+        items = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if not items or any(item['sold'] for item in items):
+            return None
+        return items[0]
+
     def _find_vendor_by_subname(
         self, item_type, zone, zone_coords, zone_filter
     ):
@@ -267,6 +286,21 @@ class GuideToolNpcMixin:
         conn.close()
 
         if not vendors:
+            unsold = self._unsold_exact_item(item_type)
+            if unsold:
+                # An exact item with no vendor rows anywhere is a verified
+                # negative answer, not an unresolved lookup.
+                item_link = (
+                    f"[[item:{unsold['entry']}:"
+                    f"{unsold['name']}:{unsold['Quality']}]]"
+                )
+                return (
+                    f"Verified: no NPC vendor sells {item_link} "
+                    f"anywhere on this server, so it cannot be bought "
+                    f"from an NPC. Call get_item_info for its verified "
+                    f"sources (drops, quests) before suggesting how to "
+                    f"get it."
+                )
             return (
                 f"No vendors for '{item_type}' "
                 f"found in "

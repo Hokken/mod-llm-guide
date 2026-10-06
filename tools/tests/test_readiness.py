@@ -122,6 +122,33 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn('Answer-readiness checks',
                       client.messages.create.call_args.kwargs['system'])
 
+    def test_unsold_exact_item_is_a_usable_negative_answer(self):
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = [
+            [], [dict(entry=2842, name='Silver Bar', Quality=1, sold=0)]]
+        connection = MagicMock()
+        connection.cursor.return_value = cursor
+        self.executor.get_connection = MagicMock(return_value=connection)
+        self.executor._creature_entry_col = 'id1'
+        result = self.executor.execute_tool(
+            'find_vendor', {'item_type': 'Silver Bar', 'zone': 'Ironforge'})
+        self.assertIn('no NPC vendor sells [[item:2842:Silver Bar:1]]',
+                      result)
+        self.assertFalse(self.executor.readiness.blocked())
+
+    def test_item_sold_elsewhere_keeps_unresolved_vendor_result(self):
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = [
+            [], [dict(entry=2840, name='Copper Bar', Quality=1, sold=1)]]
+        connection = MagicMock()
+        connection.cursor.return_value = cursor
+        self.executor.get_connection = MagicMock(return_value=connection)
+        self.executor._creature_entry_col = 'id1'
+        result = self.executor.execute_tool(
+            'find_vendor', {'item_type': 'Copper Bar', 'zone': 'Ironforge'})
+        self.assertTrue(result.startswith('No vendors'))
+        self.assertTrue(self.executor.readiness.blocked())
+
 
 if __name__ == '__main__':
     unittest.main()

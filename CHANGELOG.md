@@ -1,5 +1,13 @@
 # Changelog
 
+### 2026-10-06 - Vendor Answers and Prompt Caching
+
+* **Verified "not sold" answers**: When an exactly named item has no vendor
+  entries anywhere, `find_vendor` now reports that no NPC sells it instead
+  of an unresolved "No vendors" result. The answer-readiness guard no longer
+  replaces the correct answer with "Which name or location do you mean?",
+  and the model is pointed at `get_item_info` for the item's real sources.
+
 ### 2026-09-14 - Model Compatibility and Provider Switching
 
 * **Five provider backends**: The guide can use Anthropic, OpenAI, Google
