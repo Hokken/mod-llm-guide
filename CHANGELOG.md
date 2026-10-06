@@ -1,5 +1,12 @@
 # Changelog
 
+### 2026-10-06 - LF Line Endings
+
+* **Repository**: Add `.gitattributes` forcing LF line endings, so
+  checkouts on Windows with `core.autocrlf` enabled no longer write CRLF
+  files that break shell scripts in Linux builds. Committed files were
+  already LF; no code, configuration or database changes.
+
 ### 2026-10-06 - Vendor Answers and Prompt Caching
 
 * **Verified "not sold" answers**: When an exactly named item has no vendor
