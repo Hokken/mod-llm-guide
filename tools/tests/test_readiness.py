@@ -118,9 +118,24 @@ class ReadinessTests(unittest.TestCase):
             stop_reason='end_turn', content=[SimpleNamespace(text='An option')])
         with patch.dict(sys.modules, anthropic=SimpleNamespace(
                 Anthropic=MagicMock(return_value=client))):
-            bridge.call_anthropic('How do I travel?')
-        self.assertIn('Answer-readiness checks',
-                      client.messages.create.call_args.kwargs['system'])
+            bridge.call_anthropic(
+                'How do I travel?', bridge.build_system_prompt('Hunter', {}))
+        system = client.messages.create.call_args.kwargs['system']
+        self.assertEqual(system[0]['text'], bridge.static_system_prompt())
+        self.assertEqual(system[0]['cache_control'], {'type': 'ephemeral'})
+        self.assertNotIn('cache_control', system[1])
+        self.assertIn('Hunter', system[1]['text'])
+        self.assertIn('Answer-readiness checks', system[1]['text'])
+
+    def test_static_prompt_prefix_excludes_player_data(self):
+        bridge = LLMBridge({})
+        prompt = bridge.build_system_prompt(
+            'Karaez. Gold: 12g', {'older_topics': ['vendor lookup']})
+        static = bridge.static_system_prompt()
+        self.assertTrue(prompt.startswith(static))
+        self.assertIn('ACTUAL game database', static)
+        self.assertNotIn('Karaez', static)
+        self.assertNotIn('vendor lookup', static)
 
     def test_unsold_exact_item_is_a_usable_negative_answer(self):
         cursor = MagicMock()

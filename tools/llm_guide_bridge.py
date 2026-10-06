@@ -852,19 +852,18 @@ class LLMBridge:
                     raise TimeoutError("Guide request deadline exceeded") from error
                 time.sleep(delay)
 
-    def build_system_prompt(self, char_context: str, memories: dict) -> str:
-        """Build the system prompt with character context and memories.
+    def static_system_prompt(self) -> str:
+        """Return the request-independent prompt prefix.
 
-        Recent conversation history is no longer included here — it is
-        replayed as real user/assistant message turns for proper
-        multi-turn context (pronoun resolution, follow-ups, etc.).
-        Only older topic summaries are included in the system prompt.
-
-        Args:
-            char_context: Player info string
-            memories: Dict with 'recent' and 'older_topics' lists
+        Providers cache identical prompt prefixes, so nothing that varies
+        per player, request, or tool round may appear in this text.
         """
-        parts = [self.system_prompt, ANSWER_RULES,
+        unit_label = (
+            "meters (m) and kilometers (km)"
+            if self.distance_unit == "meters"
+            else "yards"
+        )
+        return "".join([self.system_prompt, ANSWER_RULES,
                  '\n\nPLAYER-FACING STYLE FOR EVERY TOPIC: Be brief and useful. '
                  f'Aim for at most {self.answer_target_words} words by default. '
                  'Answer the immediate question in a short plain paragraph; '
@@ -876,7 +875,35 @@ class LLMBridge:
                  'tool names or repeated disclaimers. Do not restate the '
                  'question. Use more detail only when explicitly requested or '
                  'essential to avoid misleading the player. Do not call '
-                 'limited candidates best or strongest.']
+                 'limited candidates best or strongest.',
+                 "\n\nYou have access to tools that "
+                 "query the ACTUAL game database. "
+                 "ALWAYS use them for ANY factual "
+                 "game question — quests, items, "
+                 "NPCs, vendors, trainers, spells, "
+                 "dungeons, or gear. NEVER answer "
+                 "from memory when a tool can verify "
+                 "the facts. Your training data may "
+                 "be wrong or from a different game "
+                 "version. The database is the source "
+                 "of truth for this 3.3.5a server.\n"
+                 "When reporting distances, ALWAYS "
+                 f"use {unit_label}. Never mix units."])
+
+    def build_system_prompt(self, char_context: str, memories: dict) -> str:
+        """Build the system prompt with character context and memories.
+
+        The static prefix comes first so providers can cache it; player
+        info and topics follow because they change between requests.
+        Recent conversation history is replayed as real user/assistant
+        message turns for multi-turn context (pronoun resolution,
+        follow-ups, etc.). Only older topic summaries are included here.
+
+        Args:
+            char_context: Player info string
+            memories: Dict with 'recent' and 'older_topics' lists
+        """
+        parts = [self.static_system_prompt()]
 
         if char_context:
             parts.append(f"\n\nCurrent player info: {char_context}")
@@ -890,6 +917,23 @@ class LLMBridge:
             )
 
         return "".join(parts)
+
+    def anthropic_system(self, text: str):
+        """Mark the static prompt prefix as an Anthropic cache breakpoint.
+
+        OpenAI-compatible providers cache prefixes automatically; Anthropic
+        needs an explicit breakpoint. Tools render before the system text,
+        so the breakpoint covers the tool catalog as well.
+        """
+        for prefix in (self.static_system_prompt(), CONTEXT_PROMPT,
+                       ROUTING_PROMPT):
+            if prefix and text.startswith(prefix):
+                blocks = [{"type": "text", "text": prefix,
+                           "cache_control": {"type": "ephemeral"}}]
+                if text[len(prefix):]:
+                    blocks.append({"type": "text", "text": text[len(prefix):]})
+                return blocks
+        return text
 
     def call_anthropic(
         self, question: str, system_prompt: str = None,
@@ -934,8 +978,10 @@ class LLMBridge:
             response = self.provider_call(client.messages.create,
                 model=self.anthropic_model,
                 max_tokens=self.routing_max_tokens if routing else self.max_tokens,
-                system=(system_prompt or self.system_prompt) + (
-                    '' if routing else self.tool_executor.readiness_prompt()),
+                system=self.anthropic_system(
+                    (system_prompt or self.system_prompt) + (
+                        '' if routing else
+                        self.tool_executor.readiness_prompt())),
                 messages=messages,
                 temperature=0 if routing else self.temperature,
                 **({"tools": CONTEXT_TOOLS if routing == 'context' else
@@ -947,7 +993,13 @@ class LLMBridge:
                    if routing or round_num < max_tool_rounds else {})
             )
 
-            total_tokens += response.usage.input_tokens + response.usage.output_tokens
+            usage = response.usage
+            cache_read = getattr(usage, 'cache_read_input_tokens', 0) or 0
+            cache_write = getattr(usage, 'cache_creation_input_tokens', 0) or 0
+            total_tokens += (usage.input_tokens + cache_read + cache_write +
+                             usage.output_tokens)
+            logger.info('Prompt cache: %s read, %s written, %s uncached',
+                        cache_read, cache_write, usage.input_tokens)
             if response.stop_reason == 'max_tokens':
                 raise ValueError("Provider exhausted the response token budget")
 
@@ -1172,6 +1224,11 @@ class LLMBridge:
             total_tokens += int(
                 getattr(usage, "total_tokens", 0) or 0
             )
+            details = getattr(usage, "prompt_tokens_details", None)
+            cached = getattr(details, "cached_tokens", None)
+            if isinstance(cached, int):
+                logger.info('Prompt cache: %s of %s prompt tokens cached',
+                            cached, getattr(usage, "prompt_tokens", 0))
             message = response.choices[0].message
             if getattr(response.choices[0], 'finish_reason', None) in {
                     'length', 'content_filter'}:
@@ -1441,28 +1498,6 @@ class LLMBridge:
 
             # Build enriched system prompt with context and memory
             system_prompt = self.build_system_prompt(char_context, memories)
-
-            # Add tool use instructions to system prompt
-            unit_label = (
-                "meters (m) and kilometers (km)"
-                if self.distance_unit == "meters"
-                else "yards"
-            )
-            system_prompt += (
-                "\n\nYou have access to tools that "
-                "query the ACTUAL game database. "
-                "ALWAYS use them for ANY factual "
-                "game question — quests, items, "
-                "NPCs, vendors, trainers, spells, "
-                "dungeons, or gear. NEVER answer "
-                "from memory when a tool can verify "
-                "the facts. Your training data may "
-                "be wrong or from a different game "
-                "version. The database is the source "
-                "of truth for this 3.3.5a server.\n"
-                "When reporting distances, ALWAYS "
-                f"use {unit_label}. Never mix units."
-            )
 
             # Log the full system prompt being sent
             logger.info(f"=== SYSTEM PROMPT ===\n{system_prompt}\n=== END PROMPT ===")

@@ -7,6 +7,12 @@
   of an unresolved "No vendors" result. The answer-readiness guard no longer
   replaces the correct answer with "Which name or location do you mean?",
   and the model is pointed at `get_item_info` for the item's real sources.
+* **Cache-friendly prompts**: The system prompt now places all
+  request-independent rules first and player info, topics, lookup results,
+  and readiness notes after them, so OpenAI-compatible providers can reuse
+  the cached prefix across requests and tool rounds. Anthropic calls mark
+  that prefix with an explicit cache breakpoint. Each call logs its cached
+  prompt tokens (`Prompt cache: ...`) to confirm cache hits.
 
 ### 2026-09-14 - Model Compatibility and Provider Switching
 
