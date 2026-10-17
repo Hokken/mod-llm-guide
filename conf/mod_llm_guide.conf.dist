@@ -25,6 +25,51 @@
 #
 LLMGuide.Enable = 0
 
+# Overall queue lifetime, including waiting for the bridge (worldserver).
+LLMGuide.QueueTimeoutSeconds = 300
+
+# Per-attempt lease/deadline and per-provider-call timeout (bridge).
+# Temporary provider errors use bounded retries; abandoned leases are
+# retried up to MaxAttempts. QueueTimeoutSeconds remains the overall limit.
+LLMGuide.Bridge.RequestTimeoutSeconds = 120
+LLMGuide.Bridge.ApiTimeoutSeconds = 30
+LLMGuide.Bridge.ApiRetries = 2
+LLMGuide.Bridge.RetryDelaySeconds = 1
+LLMGuide.Bridge.MaxAttempts = 2
+LLMGuide.Bridge.MaxToolRounds = 5
+
+# Shared question routing before answering. Uses the configured provider/model.
+# Exact supported local questions bypass the routing call; other factual
+# questions use one bounded classification call. Invalid or ambiguous plans
+# ask for clarification rather than guessing. Restart the bridge after changes.
+LLMGuide.Routing.Enable = 1
+LLMGuide.Conversation.Enable = 1
+# Follow-ups use one extra intent-resolution call on the configured provider.
+# Shares routing token budget and request deadline. Requires routing enabled.
+LLMGuide.Routing.MaxCalls = 3
+LLMGuide.Routing.MaxTokens = 600
+
+# Check lookup completeness before answering. No additional review LLM call.
+# Unresolved gaps are preserved as limitations in the final answer.
+LLMGuide.Readiness.Enable = 1
+
+# Concise answers for every topic; soft target, not a hard truncation limit.
+LLMGuide.Answer.TargetWords = 60
+# Optional verbose diagnostic appendix; detailed answers can still be requested.
+LLMGuide.Answer.AppendComparisonDetails = 0
+
+# Maximum distinct unresolved entity links verified per answer. Exact IDs;
+# no extra model call. Exceeding the budget asks for clarification.
+LLMGuide.Followup.MaxEntityChecks = 8
+LLMGuide.Bridge.Workers = 2
+LLMGuide.Database.ConnectTimeoutSeconds = 10
+
+# Candidate search limits; item level alone does not establish an upgrade.
+LLMGuide.Items.ResultLimit = 10
+LLMGuide.Items.MaxItemLevelIncrease = 30
+# Optional JSON overrides of role candidate filters (not performance weights).
+LLMGuide.Items.RoleStats = {}
+
 #
 #   LLMGuide.EnableVerboseLogging
 #       Enable detailed logging for debugging (tool calls, context, timing, etc.)
@@ -68,20 +113,62 @@ LLMGuide.MaxPendingPerPlayer = 3
 ###############################################################################
 # LLM API SETTINGS (Used by Python bridge)
 ###############################################################################
+#
+# To switch models, select one provider and set that provider's Model and
+# ApiKey values. Other provider credentials may remain in the file. Restart
+# the guide bridge after changing anything in this section.
+#
+# VALUE FORMAT:
+#   - Write one setting per line as: Key = value
+#   - Do not wrap values in quotes. Quotes become part of the value.
+#   - Leave an optional setting empty as: Key =
+#   - Use 0 or 1 for switches, plain numbers for numeric values, and a dot for
+#     decimals (for example: 1.5). Do not add commas, units, or percent signs.
+#   - Copy model IDs exactly. OpenRouter uses vendor/model; Ollama uses the
+#     name and optional tag shown by `ollama list`.
+#   - Inline comments are accepted only after a space and #, but comments on
+#     their own lines are clearer and safer to copy between both LLM modules.
+#
+# QUICK SETUP EXAMPLES:
+#
+#   Anthropic:
+#     LLMGuide.Provider = anthropic
+#     LLMGuide.Anthropic.Model = claude-haiku-4-5-20251001
+#     LLMGuide.Anthropic.ApiKey = sk-ant-xxxxx
+#
+#   OpenAI GPT-5.6 Luna:
+#     LLMGuide.Provider = openai
+#     LLMGuide.OpenAI.Model = gpt-5.6-luna
+#     LLMGuide.OpenAI.ApiKey = sk-xxxxx
+#     LLMGuide.OpenAI.ReasoningEffort = none
+#
+#   Google Gemini:
+#     LLMGuide.Provider = google
+#     LLMGuide.Google.Model = gemini-3.1-flash-lite
+#     LLMGuide.Google.ApiKey = AIza-xxxxx
+#
+#   OpenRouter:
+#     LLMGuide.Provider = openrouter
+#     LLMGuide.OpenRouter.Model = anthropic/claude-haiku-4.5
+#     LLMGuide.OpenRouter.ApiKey = sk-or-v1-xxxxx
+#
+#   Local Ollama (the model must support tool/function calling):
+#     LLMGuide.Provider = ollama
+#     LLMGuide.Ollama.Model = qwen3:8b
+#     LLMGuide.Ollama.BaseUrl = http://host.docker.internal:11434
 
 #
 #   LLMGuide.Provider
 #       Which LLM provider to use:
-#       "anthropic", "openai", "google", or "openrouter". The
-#       "openrouter" client is also suitable for another OpenAI-compatible
-#       endpoint when its BaseUrl is changed below.
+#       Format: one lowercase name with no quotes.
+#       Values: anthropic, openai, google, openrouter, or ollama
 #       Default: anthropic
 #
 LLMGuide.Provider = anthropic
 
 #
 #   LLMGuide.Anthropic.ApiKey
-#       Your Anthropic API key (starts with sk-ant-)
+#       Format: the complete key as one unquoted value (starts with sk-ant-).
 #       Get one at: https://console.anthropic.com/
 #       Default: (empty - must be configured)
 #
@@ -89,15 +176,16 @@ LLMGuide.Anthropic.ApiKey =
 
 #
 #   LLMGuide.Anthropic.Model
-#       Anthropic model to use
-#       Options: claude-haiku-4-5-20251001 (fast/cheap), claude-sonnet-4-20250514 (balanced)
+#       Format: an exact Anthropic model ID with no quotes or provider prefix.
+#       Examples: claude-haiku-4-5-20251001 (fast/cheap),
+#                 claude-sonnet-4-20250514 (balanced)
 #       Default: claude-haiku-4-5-20251001
 #
 LLMGuide.Anthropic.Model = claude-haiku-4-5-20251001
 
 #
 #   LLMGuide.OpenAI.ApiKey
-#       Your OpenAI API key (starts with sk-)
+#       Format: the complete key as one unquoted value (starts with sk-).
 #       Get one at: https://platform.openai.com/api-keys
 #       Default: (empty - must be configured)
 #
@@ -105,15 +193,38 @@ LLMGuide.OpenAI.ApiKey =
 
 #
 #   LLMGuide.OpenAI.Model
-#       OpenAI model to use
-#       Options: gpt-4o-mini (fast/cheap), gpt-4o (balanced)
+#       Format: an exact OpenAI API model ID with no quotes or provider prefix.
+#       Examples: gpt-5.6-luna (fast/cheap), gpt-4o-mini, gpt-4o
 #       Default: gpt-4o-mini
 #
 LLMGuide.OpenAI.Model = gpt-4o-mini
 
 #
+#   LLMGuide.OpenAI.ReasoningEffort
+#       Reasoning effort for modern OpenAI models.
+#       Format: none, low, medium, high, xhigh, or max; support varies by
+#       model. Leave empty for the model default.
+#       Use "none" for fast routing and concise guide answers.
+#       The bridge applies it only to compatible reasoning models and
+#       automatically drops it if the selected model rejects the value.
+#       Default: (empty)
+#
+LLMGuide.OpenAI.ReasoningEffort =
+
+#
+#   LLMGuide.OpenAI.MaxTokensMultiplier
+#       Multiplies output budgets when an OpenAI reasoning model can spend
+#       tokens on hidden reasoning. It is not applied when the selected model
+#       supports and uses ReasoningEffort = none.
+#       Format: a number from 1 through 8, for example 4 or 1.5.
+#       Values outside that range are clamped by the bridge.
+#       Default: 4
+#
+LLMGuide.OpenAI.MaxTokensMultiplier = 4
+
+#
 #   LLMGuide.Google.ApiKey
-#       Your Google Gemini API key.
+#       Format: the complete API key as one unquoted value.
 #       Get one at: https://aistudio.google.com/app/apikey
 #       Default: (empty - must be configured)
 #
@@ -121,10 +232,10 @@ LLMGuide.Google.ApiKey =
 
 #
 #   LLMGuide.Google.Model
-#       Google Gemini model to use
-#       Options: gemini-3.1-flash-lite (fastest/cheap/tested),
-#                gemini-2.5-flash (fast/cheap),
-#                gemini-3-flash-preview (frontier Flash preview)
+#       Format: an exact Gemini API model ID with no quotes or provider prefix.
+#       Examples: gemini-3.1-flash-lite (fastest/cheap/tested),
+#                 gemini-2.5-flash (fast/cheap),
+#                 gemini-3-flash-preview (frontier Flash preview)
 #       Alias accepted: gemini-3-flash
 #       Default: gemini-3.1-flash-lite
 #
@@ -133,6 +244,7 @@ LLMGuide.Google.Model = gemini-3.1-flash-lite
 #
 #   LLMGuide.Google.BaseUrl
 #       Google Gemini OpenAI-compatible endpoint.
+#       Format: a complete http:// or https:// URL.
 #       Only change this if Google changes the compatibility endpoint.
 #
 LLMGuide.Google.BaseUrl = https://generativelanguage.googleapis.com/v1beta/openai/
@@ -141,6 +253,7 @@ LLMGuide.Google.BaseUrl = https://generativelanguage.googleapis.com/v1beta/opena
 #   LLMGuide.Google.ReasoningEffort
 #       Gemini reasoning effort for the OpenAI-compatible API.
 #       Used only when Google.ThinkingBudget is empty.
+#       Format: a lowercase effort name supported by the selected model.
 #       Recommended for Gemini 3.1 Flash-Lite: "minimal".
 #       Set empty or "off" to omit the parameter.
 #
@@ -149,6 +262,7 @@ LLMGuide.Google.ReasoningEffort = minimal
 #
 #   LLMGuide.Google.ThinkingBudget
 #       Gemini thinking token budget for the OpenAI-compatible API.
+#       Format: a whole number with no commas or suffix, for example 0.
 #       For Gemini 2.5 Flash, set this to 0 to disable thinking for
 #       fast guide responses.
 #       Set empty to use ReasoningEffort instead.
@@ -158,13 +272,14 @@ LLMGuide.Google.ThinkingBudget =
 #
 #   LLMGuide.Google.MaxTokensMultiplier
 #       Multiplies the guide output token budget for Gemini.
+#       Format: a number such as 1 or 1.5. Values below 1 are treated as 1.
 #       Default: 1
 #
 LLMGuide.Google.MaxTokensMultiplier = 1
 
 #
 #   LLMGuide.OpenRouter.ApiKey
-#       Your OpenRouter API key.
+#       Format: the complete key as one unquoted value (normally sk-or-v1-...).
 #       Get one at: https://openrouter.ai/keys
 #       Default: (empty - must be configured if Provider = openrouter)
 #
@@ -173,9 +288,10 @@ LLMGuide.OpenRouter.ApiKey =
 #
 #   LLMGuide.OpenRouter.Model
 #       OpenRouter model slug to use.
-#       Options: anthropic/claude-haiku-4.5 (recommended),
-#                openai/gpt-4o-mini,
-#                openrouter/auto
+#       Format: vendor/model with no quotes.
+#       Examples: anthropic/claude-haiku-4.5 (recommended),
+#                 openai/gpt-4o-mini,
+#                 openrouter/auto
 #       Default: anthropic/claude-haiku-4.5
 #
 LLMGuide.OpenRouter.Model = anthropic/claude-haiku-4.5
@@ -183,6 +299,7 @@ LLMGuide.OpenRouter.Model = anthropic/claude-haiku-4.5
 #
 #   LLMGuide.OpenRouter.BaseUrl
 #       OpenRouter OpenAI-compatible endpoint.
+#       Format: a complete http:// or https:// URL; normally leave unchanged.
 #       Only change this if OpenRouter changes the compatibility endpoint.
 #
 LLMGuide.OpenRouter.BaseUrl = https://openrouter.ai/api/v1
@@ -190,6 +307,7 @@ LLMGuide.OpenRouter.BaseUrl = https://openrouter.ai/api/v1
 #
 #   LLMGuide.OpenRouter.HttpReferer
 #       Optional site URL for OpenRouter attribution/rankings.
+#       Format: a complete http:// or https:// URL, or empty to omit it.
 #       Leave empty if you do not want to send this header.
 #
 LLMGuide.OpenRouter.HttpReferer =
@@ -197,42 +315,56 @@ LLMGuide.OpenRouter.HttpReferer =
 #
 #   LLMGuide.OpenRouter.Title
 #       Optional app/site title for OpenRouter attribution/rankings.
+#       Format: plain unquoted text, or empty to omit it.
 #       Leave empty if you do not want to send this header.
 #
 LLMGuide.OpenRouter.Title =
 
 ###############################################################################
-# OPENAI-COMPATIBLE ENDPOINT SETTINGS (Used by Python bridge)
+# OLLAMA SETTINGS [BRIDGE] (only needed if Provider = ollama)
 ###############################################################################
 
 #
-#   LLMGuide.OpenAICompatible.DisableThinking
-#       Request non-reasoning mode for the OpenRouter/OpenAI-compatible
-#       provider. This is useful for endpoints whose hidden reasoning tokens
-#       otherwise consume the guide response budget.
-#       Default: 0 (disabled)
+#   LLMGuide.Ollama.Model
+#       Format: the exact name and optional tag shown by `ollama list`, such as
+#       qwen3:8b. Do not add an Ollama or provider prefix.
+#       The model must support OpenAI-style tool/function calling for the
+#       guide to retrieve reliable game data. Ollama currently ignores
+#       tool_choice on this endpoint, so the bridge falls back when optional
+#       routing returns no calls and omits tools entirely on the final round.
+#       Default: qwen3:8b
 #
-LLMGuide.OpenAICompatible.DisableThinking = 0
+LLMGuide.Ollama.Model = qwen3:8b
 
 #
-#   LLMGuide.OpenAICompatible.ReasoningControl
-#       Wire-format extension to use when DisableThinking = 1:
-#       "thinking_disabled" sends {"thinking":{"type":"disabled"}}
-#       "reasoning_none" sends {"reasoning":{"effort":"none"}}
-#       "omit" sends neither extension.
-#       Choose the option documented by your compatible endpoint.
-#       Default: thinking_disabled
+#   LLMGuide.Ollama.BaseUrl
+#       Ollama server URL without /v1. Docker users normally need
+#       host.docker.internal; host users normally use localhost.
+#       Format: http://host:port without /v1 and without quotes.
+#       Default: http://host.docker.internal:11434
 #
-LLMGuide.OpenAICompatible.ReasoningControl = thinking_disabled
+LLMGuide.Ollama.BaseUrl = http://host.docker.internal:11434
 
-# Stable routing identity required by OpenCode Go. These values are sent
-# only when OpenRouter.BaseUrl points at the OpenCode Go endpoint.
-LLMGuide.OpenAICompatible.SessionId = mod-llm-guide
-LLMGuide.OpenAICompatible.UserAgent = mod-llm-guide/1.0
+#
+#   Ollama context size is controlled by the Ollama server, not by its
+#   OpenAI-compatible API. The guide's tool catalog is large, so set
+#   OLLAMA_CONTEXT_LENGTH or PARAMETER num_ctx in a Modelfile, then use
+#   `ollama ps` to verify the context actually loaded.
+
+#
+#   LLMGuide.Ollama.DisableThinking
+#       Set to 1 to send reasoning_effort = none through Ollama's
+#       OpenAI-compatible endpoint. This keeps Qwen3-style thinking from
+#       consuming the guide's answer budget. Set 0 to allow thinking.
+#       Format: 0 (allow thinking) or 1 (disable thinking).
+#       Default: 1
+#
+LLMGuide.Ollama.DisableThinking = 1
 
 #
 #   LLMGuide.MaxTokens
 #       Maximum tokens in the LLM response
+#       Format: a positive whole token count with no commas or suffix.
 #       Higher = longer responses but more cost
 #       Default: 300
 #
@@ -250,6 +382,8 @@ LLMGuide.TruncationRetryMaxTokens = 1600
 #
 #   LLMGuide.Temperature
 #       LLM temperature (0.0 = focused, 1.0 = creative)
+#       Format: a decimal from 0.0 through 1.0, for example 0.7.
+#       Automatically omitted for models that do not support custom values.
 #       Default: 0.7
 #
 LLMGuide.Temperature = 0.7
@@ -309,6 +443,15 @@ LLMGuide.Database.Password = acore
 #       Default: acore_characters
 #
 LLMGuide.Database.Name = acore_characters
+
+#
+#   LLMGuide.Database.WorldName
+#       World database used by game-data tools. Shares the connection settings
+#       above; the database account must have read access to this database.
+#       Restart the Python bridge after changing this setting.
+#       Default: acore_world
+#
+LLMGuide.Database.WorldName = acore_world
 
 #
 #   LLMGuide.Bridge.PollIntervalSeconds
@@ -371,3 +514,9 @@ LLMGuide.Memory.SummarizeThreshold = 10
 #       Default: /azerothcore/modules/mod-llm-guide/data/sql/db-world/base/llm_guide_npc_areas.sql
 #
 # LLMGuide.GenerateAreas.OutputPath = /azerothcore/modules/mod-llm-guide/data/sql/db-world/base/llm_guide_npc_areas.sql
+
+# Preserved compatible-provider and private-whisper options.
+LLMGuide.OpenAICompatible.DisableThinking = 0
+LLMGuide.OpenAICompatible.ReasoningControl = thinking_disabled
+LLMGuide.OpenAICompatible.SessionId = mod-llm-guide
+LLMGuide.OpenAICompatible.UserAgent = mod-llm-guide/1.0

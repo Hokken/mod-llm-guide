@@ -1,6 +1,7 @@
 """NPC and creature lookup domain for mod-llm-guide."""
 
 from zone_coordinates import world_to_map_coords
+from guide_services import SERVICE_ALIASES, SERVICE_PATTERNS, resolve_service
 
 
 class GuideToolNpcMixin:
@@ -57,16 +58,10 @@ class GuideToolNpcMixin:
         'riding': '%Riding%', 'pet': '%Pet%',
     }
 
-    SERVICE_PATTERNS = {
-        'stable master': '%Stable Master%', 'stable': '%Stable Master%',
-        'innkeeper': '%Innkeeper%', 'inn': '%Innkeeper%',
-        'flight master': '%Flight Master%', 'flight': '%Flight Master%',
-        'banker': '%Banker%', 'bank': '%Banker%',
-        'auctioneer': '%Auctioneer%', 'auction': '%Auctioneer%',
-        'barber': '%Barber%',
-        'repair': '%Repair%', 'armorer': '%Armor%',
-        'guild master': '%Guild Master%',
-    }
+    # UNIT_NPC_FLAG_FLIGHTMASTER in AzerothCore's UnitDefines.h.
+    FLIGHT_MASTER_FLAG = 0x2000
+    FLIGHT_MASTER_ALIASES = SERVICE_ALIASES['flight_master']
+    SERVICE_PATTERNS = SERVICE_PATTERNS
 
     def _find_vendor(self, params: dict) -> str:
         """Find vendors selling specific items."""
@@ -234,6 +229,25 @@ class GuideToolNpcMixin:
         result += "\nIMPORTANT: Include the [[npc:...]] markers exactly as shown - they become colored NPC links!"
         return result
 
+    def _unsold_exact_item(self, item_name):
+        """Return the exactly named item when no vendor sells it."""
+        conn = self.get_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT it.entry, it.name, it.Quality,
+                   EXISTS(SELECT 1 FROM npc_vendor nv
+                          WHERE nv.item = it.entry) AS sold
+            FROM item_template it
+            WHERE LOWER(it.name) = %s
+            ORDER BY it.entry
+        """, (item_name.strip().lower(),))
+        items = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if not items or any(item['sold'] for item in items):
+            return None
+        return items[0]
+
     def _find_vendor_by_subname(
         self, item_type, zone, zone_coords, zone_filter
     ):
@@ -272,6 +286,21 @@ class GuideToolNpcMixin:
         conn.close()
 
         if not vendors:
+            unsold = self._unsold_exact_item(item_type)
+            if unsold:
+                # An exact item with no vendor rows anywhere is a verified
+                # negative answer, not an unresolved lookup.
+                item_link = (
+                    f"[[item:{unsold['entry']}:"
+                    f"{unsold['name']}:{unsold['Quality']}]]"
+                )
+                return (
+                    f"Verified: no NPC vendor sells {item_link} "
+                    f"anywhere on this server, so it cannot be bought "
+                    f"from an NPC. Call get_item_info for its verified "
+                    f"sources (drops, quests) before suggesting how to "
+                    f"get it."
+                )
             return (
                 f"No vendors for '{item_type}' "
                 f"found in "
@@ -399,11 +428,16 @@ class GuideToolNpcMixin:
         service_type = params.get("service_type", "").lower()
         zone = params.get("zone", "").lower()
 
-        _, pattern = self._fuzzy_dict_match(
-            service_type, self.SERVICE_PATTERNS
-        )
-        if not pattern:
-            return f"Unknown service: {service_type}. Try: stable master, innkeeper, flight master, banker, auctioneer."
+        service_key = resolve_service(service_type)
+        if service_key is None:
+            return ("Invalid tool arguments: unknown service. Use a canonical "
+                    "service name or ask the player to clarify.")
+        pattern = self.SERVICE_PATTERNS[service_key]
+
+        is_flight_master = service_key == 'flight_master'
+        predicate = ('(ct.npcflag & %s) <> 0' if is_flight_master else
+                     'ct.subname LIKE %s')
+        service_value = self.FLIGHT_MASTER_FLAG if is_flight_master else pattern
 
         zone_coords, zone_filter = self._get_zone_filter(zone)
         dist_cols, order, sel_params, \
@@ -422,17 +456,21 @@ class GuideToolNpcMixin:
             FROM creature_template ct
             JOIN creature c ON ct.entry = c.{entry_col}
             LEFT JOIN llm_guide_npc_areas na ON na.creature_guid = c.guid
-            WHERE ct.subname LIKE %s {zone_filter}
+            WHERE {predicate} {zone_filter}
             {order}
             LIMIT 5
-        """, (*sel_params, pattern, *ord_params))
+        """, (*sel_params, service_value, *ord_params))
 
         npcs = cursor.fetchall()
         cursor.close()
         conn.close()
 
         if not npcs:
-            return f"No {service_type} found in {zone or 'the world'}."
+            return (
+                f"No matching {service_type} returned by this lookup in "
+                f"{zone or 'the world'}. This is not proof that the service "
+                "does not exist. Do not invent a nearest NPC or location; "
+                "try a named-NPC lookup or explain the search limitation.")
 
         hint = " (closest first)" if dist_active else ""
         result = f"{service_type.title()} in {zone or 'the world'}{hint}:\n"

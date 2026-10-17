@@ -21,6 +21,7 @@ public:
     uint32 GetPollIntervalMs() const { return _pollIntervalMs; }
     uint32 GetMaxResponseLength() const { return _maxResponseLength; }
     uint32 GetMaxPendingPerPlayer() const { return _maxPendingPerPlayer; }
+    uint32 GetQueueTimeoutSeconds() const { return _queueTimeoutSeconds; }
 
 private:
     LLMGuideConfig() = default;
@@ -31,6 +32,7 @@ private:
     uint32 _pollIntervalMs = 1000;
     uint32 _maxResponseLength = 800;
     uint32 _maxPendingPerPlayer = 3;
+    uint32 _queueTimeoutSeconds = 300;
 };
 
 #define sLLMGuideConfig LLMGuideConfig::instance()

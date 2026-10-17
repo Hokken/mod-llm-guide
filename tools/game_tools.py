@@ -4,6 +4,7 @@ Defines tools that Claude can call to query the WoW database.
 """
 
 import logging
+import json
 from zone_coordinates import get_zone_coordinates, get_zone_id, ZONE_COORDINATES
 
 from guide_tool_shared import GuideToolSharedMixin
@@ -11,6 +12,11 @@ from guide_tool_npcs import GuideToolNpcMixin
 from guide_tool_spells import GuideToolSpellMixin
 from guide_tool_quests import GuideToolQuestMixin
 from guide_tool_items import GuideToolItemMixin
+from guide_reliability import EvidenceLedger, validate_arguments
+from guide_item_comparison import DEFAULT_ROLE_STATS
+from guide_services import SERVICE_PATTERNS
+from guide_readiness import AnswerReadiness
+from guide_presentation import compact_equipment_answer
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +26,14 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 GAME_TOOLS = [
+    {
+        "name": "get_character_context",
+        "description": "Read the server's character snapshot for questions about your own gear, professions, talents, group or active quests. Values describe the time the question was submitted.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
     {
         "name": "find_vendor",
         "description": "Find vendors selling specific items in a zone. Returns NPC names with [[npc:ID:Name]] markers that become colored links in-game. IMPORTANT: Include these [[npc:...]] markers exactly as-is in your response.",
@@ -64,7 +78,7 @@ GAME_TOOLS = [
             "properties": {
                 "service_type": {
                     "type": "string",
-                    "description": "Type of service (e.g., 'stable master', 'innkeeper', 'flight master', 'banker', 'auctioneer', 'barber', 'repair')"
+                    "description": "Canonical service: " + ', '.join(SERVICE_PATTERNS) + ". Interpret synonyms semantically; griphon/gryphon/taxi means flight_master, not a title search."
                 },
                 "zone": {
                     "type": "string",
@@ -198,10 +212,11 @@ GAME_TOOLS = [
             "properties": {
                 "quest_name": {
                     "type": "string",
-                    "description": "Name or partial name of the quest"
-                }
+                    "description": "Name or partial name; provide quest_id instead for an exact stage"
+                },
+                "quest_id": {"type": "integer", "minimum": 1, "description": "Exact quest ID; takes precedence over name"}
             },
-            "required": ["quest_name"]
+            "anyOf": [{"required": ["quest_name"]}, {"required": ["quest_id"]}]
         }
     },
     {
@@ -213,6 +228,16 @@ GAME_TOOLS = [
                 "current_item": {
                     "type": "string",
                     "description": "Name of the current item to find upgrades for"
+                },
+                "role": {
+                    "type": "string",
+                    "enum": ["tank", "healer", "melee", "ranged", "caster"],
+                    "description": "Intended role from the player's stated spec; ask if unclear."
+                },
+                "preferred_stats": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Optional desired stat IDs: 3 agility, 4 strength, 5 intellect, 12 defense, 31 hit, 32 crit, 36 haste, 37 expertise, 38 AP, 45 spell power. Use the stated spec, not class alone."
                 },
                 "item_slot": {
                     "type": "string",
@@ -514,10 +539,11 @@ GAME_TOOLS = [
             "properties": {
                 "quest_name": {
                     "type": "string",
-                    "description": "Name of any quest in the chain (will find full chain)"
-                }
+                    "description": "Name of a quest; active-log matches take precedence"
+                },
+                "quest_id": {"type": "integer", "minimum": 1, "description": "Exact quest ID; takes precedence over name"}
             },
-            "required": ["quest_name"]
+            "anyOf": [{"required": ["quest_name"]}, {"required": ["quest_id"]}]
         }
     },
     {
@@ -692,8 +718,9 @@ class GameToolExecutor(
     # 1 WoW unit = 1 yard = 0.9144 meters
     YARD_TO_METER = 0.9144
 
-    def __init__(self, db_config: dict):
+    def __init__(self, db_config: dict, world_database: str = 'acore_world'):
         self.db_config = db_config
+        self.world_database = world_database
         self.default_zone = None  # Player's current zone, set before processing
         self.player_x = None
         self.player_y = None
@@ -703,6 +730,44 @@ class GameToolExecutor(
         self.default_player_class = None
         self.default_faction = None
         self.active_quest_ids = []
+        self.snapshot = None
+        self.evidence = EvidenceLedger()
+        self.readiness = AnswerReadiness()
+        self.readiness_enabled = True
+        self.item_comparisons = {}
+        self.append_comparison_details = False
+        self.upgrade_limit = 10
+        self.upgrade_level_range = 30
+        self.role_stats = DEFAULT_ROLE_STATS
+
+    def begin_request(self, snapshot, summary=''):
+        self.snapshot = snapshot
+        self.character_summary = summary
+        self.evidence = EvidenceLedger()
+        self.readiness = AnswerReadiness()
+        self.item_comparisons = {}
+
+    def finalize_answer(self, response, required, detailed=False):
+        """Validate model output before adding verified links/source notes."""
+        if self.readiness_enabled:
+            response = self.readiness.finalize(response)
+            # A deterministic limitation is valid even when every lookup
+            # failed. Entity/link validation still runs below.
+            if self.readiness.blocked():
+                required = False
+        response = self.evidence.canonicalize_links(response)
+        self.evidence.validate(response, required)
+        response = self.evidence.link_item_mentions(response)
+        if not detailed:
+            response = compact_equipment_answer(response)
+        notes = [note for marker, note in self.item_comparisons.items()
+                 if marker in response]
+        if notes and self.append_comparison_details:
+            response += (
+                '\n\nComparison checks (not a best-in-slot ranking; '
+                'access and affordability unverified):\n' + '\n'.join(notes))
+        self.evidence.validate(response, required)
+        return response
 
     def set_player_zone(self, zone: str):
         """Set the player's current zone for use as default in tool calls."""
@@ -868,7 +933,7 @@ class GameToolExecutor(
         """Get database connection."""
         import mysql.connector
         world_config = self.db_config.copy()
-        world_config['database'] = 'acore_world'
+        world_config['database'] = self.world_database
         return mysql.connector.connect(**world_config)
 
     def _creature_entry_column(self, conn):
@@ -886,7 +951,7 @@ class GameToolExecutor(
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-                "WHERE TABLE_SCHEMA = 'acore_world' "
+                "WHERE TABLE_SCHEMA = DATABASE() "
                 "AND TABLE_NAME = 'creature' "
                 "AND COLUMN_NAME IN ('id', 'id1') "
                 "ORDER BY (COLUMN_NAME = 'id') DESC LIMIT 1"
@@ -933,7 +998,27 @@ class GameToolExecutor(
         return zone_data, filter_sql
 
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
+        if not isinstance(tool_input, dict):
+            result = "Invalid tool arguments: expected a JSON object."
+        elif 'active_quest_ids' in tool_input:
+            result = "Invalid tool arguments: quest exclusions are server-owned."
+        else:
+            result = self._execute_tool(tool_name, tool_input)
+        self.evidence.record(result)
+        if self.readiness_enabled:
+            self.readiness.record(tool_name, tool_input, result, self)
+        return result
+
+    def readiness_prompt(self):
+        return self.readiness.prompt() if self.readiness_enabled else ''
+
+    def _execute_tool(self, tool_name: str, tool_input: dict) -> str:
         """Execute a tool and return results as a string."""
+        definition = next((tool for tool in GAME_TOOLS
+                           if tool['name'] == tool_name), None)
+        if definition is None:
+            return f"Unknown tool: {tool_name}"
+        properties = definition['input_schema'].get('properties', {})
         # Auto-inject player's zone if not specified and tool supports it
         zone_tools = {
             'find_vendor', 'find_trainer', 'find_service_npc', 'find_npc',
@@ -941,6 +1026,7 @@ class GameToolExecutor(
             'find_hunter_pet', 'get_flight_paths', 'list_zone_creatures'
         }
         if (tool_name in zone_tools and
+                'zone' in properties and
                 'zone' not in tool_input and
                 self.default_zone):
             tool_input = tool_input.copy()  # Don't modify original
@@ -954,6 +1040,7 @@ class GameToolExecutor(
                 'get_available_quests', 'find_item_upgrades',
                 'get_class_quests'}:
             if ('player_class' not in tool_input and
+                    'player_class' in properties and
                     self.default_player_class):
                 tool_input = tool_input.copy()
                 tool_input['player_class'] = (
@@ -964,6 +1051,7 @@ class GameToolExecutor(
                 'list_spells_by_level', 'get_available_quests',
                 'find_item_upgrades', 'get_class_quests'}:
             if ('level' not in tool_input and
+                    'level' in properties and
                     tool_name in {
                         'list_spells_by_level',
                         'get_class_quests'} and
@@ -974,6 +1062,7 @@ class GameToolExecutor(
                 )
                 injected_fields.append('level')
             if ('player_level' not in tool_input and
+                    'player_level' in properties and
                     tool_name in {
                         'get_available_quests',
                         'find_item_upgrades'} and
@@ -987,6 +1076,7 @@ class GameToolExecutor(
                 'get_available_quests', 'find_battlemaster',
                 'get_weapon_skill_trainer', 'get_flight_paths'}:
             if ('faction' not in tool_input and
+                    'faction' in properties and
                     self.default_faction):
                 tool_input = tool_input.copy()
                 tool_input['faction'] = (
@@ -1013,7 +1103,26 @@ class GameToolExecutor(
         )
 
         try:
-            if tool_name == "find_vendor":
+            # Internal quest exclusions are supplied by the server, never
+            # trusted from the model or exposed in the public tool schema.
+            public_input = {key: value for key, value in tool_input.items()
+                            if key != 'active_quest_ids'}
+            error = validate_arguments(
+                definition['input_schema'], public_input)
+            if error:
+                return f"Invalid tool arguments: {error}"
+            if tool_name == "get_character_context":
+                if self.snapshot is None:
+                    return ("Legacy character summary (may be incomplete): "
+                            + getattr(self, 'character_summary', 'Unavailable')
+                            + '\nActive quest IDs at request time: '
+                            + json.dumps(self.active_quest_ids))
+                context = {key: value for key, value in
+                                   self.snapshot.items() if key not in
+                                   {'eligible_quest_ids', 'known_spells'}}
+                context['active_quest_ids'] = list(self.active_quest_ids)
+                return json.dumps(context, ensure_ascii=False)
+            elif tool_name == "find_vendor":
                 return self._find_vendor(tool_input)
             elif tool_name == "find_trainer":
                 return self._find_trainer(tool_input)
@@ -1366,7 +1475,9 @@ class GameToolExecutor(
             for dest in connections:
                 result += f"- {dest.title()}\n"
         else:
-            result += f"No flight paths found from {from_location}. Check if you have the flight point.\n"
+            result += (f"No route entry from {from_location} in this limited "
+                       "table. This does not establish whether a flight master "
+                       "exists, which nodes you know, or the fastest route.\n")
 
         # Boat routes
         boat_key = None

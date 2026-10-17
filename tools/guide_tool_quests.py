@@ -264,20 +264,45 @@ class GuideToolQuestMixin:
             )
             active_params.extend(active_ids)
 
+        snapshot = getattr(self, 'snapshot', None)
+        eligibility_filter = ""
+        eligibility_params = []
+        if snapshot is not None:
+            eligible = snapshot['eligible_quest_ids']
+            if not eligible:
+                cursor.close()
+                conn.close()
+                return "The server found no eligible quests for this character."
+            eligibility_filter = (
+                "AND qt.ID IN (" + ",".join(["%s"] * len(eligible)) + ")"
+            )
+            eligibility_params = eligible
+
         cursor.execute(f"""
             SELECT DISTINCT qt.ID, qt.LogTitle, qt.QuestLevel, qt.MinLevel,
-                   ct.entry as npc_entry, ct.name as npc_name
+                   c.entry as npc_entry, c.name as npc_name, c.source_type
             FROM quest_template qt
             LEFT JOIN quest_template_addon qta ON qt.ID = qta.ID
-            JOIN creature_queststarter cq ON qt.ID = cq.quest
-            JOIN creature_template ct ON cq.id = ct.entry
-            JOIN creature c ON ct.entry = c.{entry_col}
+            JOIN (
+                SELECT cq.quest, ct.entry, ct.name, 'npc' AS source_type,
+                       c.position_x, c.position_y, c.map
+                FROM creature_queststarter cq
+                JOIN creature_template ct ON cq.id = ct.entry
+                JOIN creature c ON ct.entry = c.{entry_col}
+                UNION ALL
+                SELECT gq.quest, gt.entry, gt.name, 'object' AS source_type,
+                       g.position_x, g.position_y, g.map
+                FROM gameobject_queststarter gq
+                JOIN gameobject_template gt ON gq.id = gt.entry
+                JOIN gameobject g ON gt.entry = g.id
+            ) c ON qt.ID = c.quest
             WHERE qt.MinLevel <= %s
               AND qt.QuestLevel >= %s
               AND qt.QuestLevel <= %s
               {faction_filter}
               {class_filter}
               {active_filter}
+              {eligibility_filter}
               {zone_filter}
             ORDER BY qt.QuestLevel ASC, qt.LogTitle
             LIMIT 20
@@ -286,6 +311,7 @@ class GuideToolQuestMixin:
             max(1, player_level - 5),
             player_level + 10,
             *active_params,
+            *eligibility_params,
         ))
 
         quests = cursor.fetchall()
@@ -293,19 +319,27 @@ class GuideToolQuestMixin:
         conn.close()
 
         if not quests:
-            return f"No quests available at level {player_level} in {zone}. You may need to level up or check a different zone."
+            return (f"No matching quest starters found at level {player_level} "
+                    f"in {zone}. This search covers spawned NPCs and objects, "
+                    "not item-started quests.")
 
         npc_quests = {}
         for q in quests:
-            npc_key = (q['npc_entry'], q['npc_name'])
+            npc_key = (q['npc_entry'], q['npc_name'],
+                       q.get('source_type', 'npc'))
             if npc_key not in npc_quests:
                 npc_quests[npc_key] = []
             npc_quests[npc_key].append(q)
 
-        result = f"Quests available at level {player_level} in {zone.title()}:\n\n"
+        label = ("Server-eligible quests at request time" if snapshot is not None
+                 else "Potential quests (character eligibility unavailable)")
+        result = f"{label} at level {player_level} in {zone.title()}:\n\n"
+        result += ("Acceptance can still require quest-log/bag space, an "
+                   "accessible starter and unchanged player state.\n")
 
-        for (npc_entry, npc_name), quest_list in npc_quests.items():
-            npc_link = f"[[npc:{npc_entry}:{npc_name}]]"
+        for (npc_entry, npc_name, source_type), quest_list in npc_quests.items():
+            npc_link = (f"[[npc:{npc_entry}:{npc_name}]]"
+                        if source_type == 'npc' else f"{npc_name} (object)")
             result += f"{npc_link}:\n"
             for q in quest_list[:3]:
                 quest_link = f"[[quest:{q['ID']}:{q['LogTitle']}:{q['QuestLevel']}]]"
@@ -321,8 +355,9 @@ class GuideToolQuestMixin:
     def _get_quest_info(self, params: dict) -> str:
         """Get detailed quest information."""
         quest_name = params.get("quest_name", "")
+        quest_id = params.get('quest_id')
 
-        if not quest_name:
+        if not quest_name and not quest_id:
             return (
                 "Please specify a quest name "
                 "to look up."
@@ -332,7 +367,11 @@ class GuideToolQuestMixin:
         entry_col = self._creature_entry_column(conn)
         cursor = conn.cursor(dictionary=True)
 
-        cursor.execute("""
+        active = tuple(self.active_quest_ids)
+        active_order = ('qt.ID IN (' + ','.join(['%s'] * len(active)) +
+                        ') DESC, ') if active else ''
+        predicate = 'qt.ID = %s' if quest_id else 'qt.LogTitle LIKE %s'
+        cursor.execute(f"""
             SELECT qt.ID, qt.LogTitle,
                    qt.QuestLevel, qt.MinLevel,
                    qt.AllowableRaces,
@@ -362,9 +401,10 @@ class GuideToolQuestMixin:
                    qt.RewardAmount2,
                    qt.RewardNextQuest
             FROM quest_template qt
-            WHERE qt.LogTitle LIKE %s
+            WHERE {predicate}
+            ORDER BY {active_order}qt.ID
             LIMIT 5
-        """, (f"%{quest_name}%",))
+        """, (quest_id if quest_id else f"%{quest_name}%", *active))
 
         quests = cursor.fetchall()
 
@@ -396,6 +436,10 @@ class GuideToolQuestMixin:
                 f"{quest['MinLevel']}) "
                 f"[{faction}]\n\n"
             )
+            out += ('Active in your quest log at request time.\n' if
+                    quest['ID'] in active else
+                    'Not in your active quest log at request time; this does '
+                    'not establish completion or eligibility.\n')
 
             if quest['LogDescription']:
                 desc = (
@@ -496,9 +540,7 @@ class GuideToolQuestMixin:
                 if giver['areaId']:
                     area_id = giver['areaId']
                     cursor.execute(
-                        "SELECT ID FROM "
-                        "acore_world"
-                        ".areatable_dbc "
+                        "SELECT ID FROM areatable_dbc "
                         "WHERE ID = %s",
                         (area_id,)
                     )
@@ -685,22 +727,42 @@ class GuideToolQuestMixin:
     def _get_quest_chain(self, params: dict) -> str:
         """Get the full quest chain for a quest."""
         quest_name = params.get("quest_name", "")
+        quest_id = params.get('quest_id')
 
-        if not quest_name:
+        if not quest_name and not quest_id:
             return "Please specify a quest name."
 
         conn = self.get_connection()
         cursor = conn.cursor(dictionary=True)
 
-        candidates = self._search_quest_candidates(
-            cursor, quest_name
-        )
+        if quest_id:
+            candidates = [{'ID': quest_id}]
+        else:
+            # Resolve active stages before any title-search result limit.
+            active = tuple(self.active_quest_ids)
+            candidates = []
+            if active:
+                cursor.execute('SELECT ID, LogTitle, QuestLevel, MinLevel, '
+                               'AllowableRaces '
+                               'FROM quest_template WHERE ID IN (' +
+                               ','.join(['%s'] * len(active)) +
+                               ') AND LOWER(LogTitle) = %s ORDER BY ID',
+                               (*active, quest_name.lower()))
+                candidates = cursor.fetchall()
+                if len(candidates) > 1:
+                    result = self._format_quest_clarification(
+                        quest_name, candidates)
+                    cursor.close()
+                    conn.close()
+                    return result
+            if not candidates:
+                candidates = self._search_quest_candidates(cursor, quest_name)
         if not candidates:
             cursor.close()
             conn.close()
             return f"Quest '{quest_name}' not found."
 
-        if self._is_ambiguous_top_match(candidates):
+        if len(candidates) > 1 and self._is_ambiguous_top_match(candidates):
             result = self._format_quest_clarification(
                 quest_name, candidates
             )
@@ -791,21 +853,29 @@ class GuideToolQuestMixin:
                 search_position = i
                 break
 
-        result = f"**Quest Chain** ({len(chain)} quests):\n\n"
+        selected_link = (f"[[quest:{quest['ID']}:{quest['LogTitle']}:"
+                         f"{quest['QuestLevel']}]]")
+        state = ('ACTIVE in your quest log at request time' if
+                 quest['ID'] in self.active_quest_ids else
+                 'not active at request time; completion unknown')
+        result = (f"Selected stage: {selected_link} ({state}).\n"
+                  f"Linked stages ({len(chain)} quests):\n\n")
 
         for i, q in enumerate(chain):
             lvl = q['QuestLevel'] if q['QuestLevel'] > 0 else q['MinLevel']
             quest_link = f"[[quest:{q['ID']}:{q['LogTitle']}:{q['QuestLevel']}]]"
 
             marker = " <- (this quest)" if i == search_position else ""
+            if q['ID'] in self.active_quest_ids:
+                marker += ' [ACTIVE in your quest log at request time]'
             giver = f" from {q['QuestGiver']}" if q['QuestGiver'] else ""
 
             result += f"{i+1}. {quest_link} (Level {lvl}){giver}{marker}\n"
 
-        if len(chain) == 1:
-            result += "\nThis quest is not part of a chain (standalone quest)."
-        else:
-            result += f"\nChain has {len(chain)} quests total."
+        result += ('\nThese are linked stages found by this lookup, not proof '
+                   'of a complete chain or its final reward. Alternate links '
+                   'and branches may be missing. Use get_quest_info with an '
+                   'exact quest_id for stage details.')
 
         result += "\n\nIMPORTANT: Include the [[quest:...]] markers exactly as shown - they become clickable links!"
         return result

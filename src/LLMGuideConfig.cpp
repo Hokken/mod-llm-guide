@@ -20,6 +20,8 @@ void LLMGuideConfig::LoadConfig()
     _pollIntervalMs = sConfigMgr->GetOption<uint32>("LLMGuide.PollIntervalMs", 1000);
     _maxResponseLength = sConfigMgr->GetOption<uint32>("LLMGuide.MaxResponseLength", 800);
     _maxPendingPerPlayer = sConfigMgr->GetOption<uint32>("LLMGuide.MaxPendingPerPlayer", 3);
+    _queueTimeoutSeconds = sConfigMgr->GetOption<uint32>(
+        "LLMGuide.QueueTimeoutSeconds", 300);
 
     if (_enabled)
     {

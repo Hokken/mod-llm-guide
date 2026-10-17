@@ -4,6 +4,7 @@
  */
 
 #include "LLMGuideConfig.h"
+#include "LLMGuideContext.h"
 #include "Chat.h"
 #include "Config.h"
 #include "DatabaseEnv.h"
@@ -297,7 +298,9 @@ static std::string GetEquipmentDetails(Player* player)
         playerEquipment[guid][proto->Name1] = proto->ItemId;
 
         std::ostringstream itemStr;
-        itemStr << "[" << proto->Name1 << "]";
+        itemStr << GetGuideEquipmentSlotName(slot) << ": [[item:"
+            << proto->ItemId << ":" << proto->Name1 << ":"
+            << uint32(proto->Quality) << "]]";
 
         // Add item level
         itemStr << " (iLvl " << proto->ItemLevel;
@@ -323,7 +326,7 @@ static std::string GetEquipmentDetails(Player* player)
         if (!statList.empty())
         {
             itemStr << ", ";
-            for (size_t i = 0; i < statList.size() && i < 3; ++i)  // Limit to 3 stats
+            for (size_t i = 0; i < statList.size(); ++i)
             {
                 if (i > 0) itemStr << "/";
                 itemStr << statList[i];
@@ -932,6 +935,16 @@ static std::vector<std::string> SplitRawChatChunks(
         if (lastSpace == std::string::npos || lastSpace <= start)
             lastSpace = end;
 
+        // Item names can contain spaces. Keep a complete link marker in
+        // one chunk so conversion never receives half of a clickable link.
+        size_t markerStart = text.rfind("[[", lastSpace);
+        if (markerStart != std::string::npos && markerStart >= start)
+        {
+            size_t markerEnd = text.find("]]", markerStart);
+            if (markerEnd != std::string::npos && lastSpace < markerEnd + 2)
+                lastSpace = markerStart > start ? markerStart : markerEnd + 2;
+        }
+
         chunks.push_back(text.substr(start, lastSpace - start));
         start = lastSpace;
 
@@ -1033,12 +1046,21 @@ static std::string BuildCharacterContext(Player* player)
         {
             profs.push_back(prof.str());
         }
-        // Secondary professions (categoryId == 9): Fishing, Cooking, First Aid
-        else if (skill->categoryId == SKILL_CATEGORY_SECONDARY)
+        // The secondary category also includes non-profession skills.
+        // Only Fishing, Cooking and First Aid belong in this list.
+        else if (skill->id == SKILL_FISHING ||
+                 skill->id == SKILL_COOKING ||
+                 skill->id == SKILL_FIRST_AID)
         {
             secondaryProfs.push_back(prof.str());
         }
     }
+
+    if (uint16 riding = player->GetSkillValue(SKILL_RIDING))
+        ctx << "Travel skill: Riding (" << riding << "). ";
+
+    if (profs.empty() && secondaryProfs.empty())
+        ctx << "Professions: none learned. ";
 
     if (!profs.empty() || !secondaryProfs.empty())
     {
@@ -1179,8 +1201,8 @@ static bool SubmitQuestion(Player* player, const std::string& questionStr, bool 
 
     // Build character context
     std::string characterContext = BuildCharacterContext(player);
-    if (characterContext.length() > 500)
-        characterContext = characterContext.substr(0, 497) + "...";
+    std::string snapshot = BuildGuideSnapshot(player, characterContext);
+    CharacterDatabase.EscapeString(snapshot);
     std::string escapedContext = characterContext;
     CharacterDatabase.EscapeString(escapedContext);
 
@@ -1218,8 +1240,8 @@ static bool SubmitQuestion(Player* player, const std::string& questionStr, bool 
 
     // Insert into queue
     CharacterDatabase.Execute(
-        "INSERT INTO llm_guide_queue (character_guid, character_name, character_context, question, position_x, position_y, map_id, active_quest_ids, status, created_at) "
-        "VALUES ({}, '{}', '{}', '{}', {}, {}, {}, '{}', 'pending', NOW())",
+        "INSERT INTO llm_guide_queue (character_guid, character_name, character_context, question, position_x, position_y, map_id, active_quest_ids, character_snapshot, status, created_at) "
+        "VALUES ({}, '{}', '{}', '{}', {}, {}, {}, '{}', '{}', 'pending', NOW())",
         guid,
         escapedName,
         escapedContext,
@@ -1227,7 +1249,8 @@ static bool SubmitQuestion(Player* player, const std::string& questionStr, bool 
         posX,
         posY,
         mapId,
-        activeQuestIdList);
+        activeQuestIdList,
+        snapshot);
 
     // Update cooldown
     playerCooldowns[guid] = now;
@@ -1749,6 +1772,36 @@ static bool TryHandleAgAliasCommand(
     if (input == "clear")
         return ClearHistory(handler, player);
 
+    if (input == "cancel")
+    {
+        CharacterDatabase.DirectExecute(
+            "UPDATE llm_guide_queue SET status = 'cancelled' "
+            "WHERE character_guid = {} "
+            "AND status IN ('pending', 'processing', 'complete', 'error')",
+            player->GetGUID().GetCounter());
+        handler->SendSysMessage("Outstanding guide requests cancelled.");
+        return true;
+    }
+
+    if (input == "status")
+    {
+        QueryResult requests = CharacterDatabase.Query(
+            "SELECT status, COUNT(*) FROM llm_guide_queue "
+            "WHERE character_guid = {} "
+            "AND status IN ('pending', 'processing', 'complete', 'error') "
+            "GROUP BY status", player->GetGUID().GetCounter());
+        if (!requests)
+            handler->SendSysMessage("No outstanding guide requests.");
+        else
+            do
+            {
+                handler->PSendSysMessage("Guide: {} ({})",
+                    (*requests)[0].Get<std::string>(),
+                    (*requests)[1].Get<uint32>());
+            } while (requests->NextRow());
+        return true;
+    }
+
     if (input == "generate-areas")
         return GenerateNpcAreas(handler, player);
 
@@ -1867,10 +1920,22 @@ public:
 
         timer = 0;
 
+        // Expire even when the bridge is offline. A late worker cannot
+        // publish over this terminal state because completion is guarded.
+        CharacterDatabase.DirectExecute(
+            "UPDATE llm_guide_queue SET status = 'error', "
+            "error_message = 'The guide request timed out. Please try again.' "
+            "WHERE status IN ('pending', 'processing') "
+            "AND created_at < TIMESTAMPADD(SECOND, -{}, NOW())",
+            sLLMGuideConfig->GetQueueTimeoutSeconds());
+
         // Atomically mark rows as 'delivered' to prevent duplicate processing
         CharacterDatabase.DirectExecute(
-            "UPDATE llm_guide_queue SET status = 'delivered' "
-            "WHERE status = 'complete' LIMIT 5");
+            "UPDATE llm_guide_queue SET "
+            "response = IF(status = 'error', "
+            "'The guide could not finish that request. Please try again.', "
+            "response), status = 'delivered' "
+            "WHERE status IN ('complete', 'error') LIMIT 5");
 
         // Now fetch the rows we just marked
         QueryResult result = CharacterDatabase.Query(

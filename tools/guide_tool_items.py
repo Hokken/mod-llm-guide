@@ -1,5 +1,7 @@
 """Item lookup domain for mod-llm-guide."""
 
+from guide_item_comparison import item_stats, stat_deltas, meets_requirements
+
 
 class GuideToolItemMixin:
     """Item details and upgrade behavior."""
@@ -93,12 +95,7 @@ class GuideToolItemMixin:
             return result
 
         cursor.execute("""
-            SELECT entry, name, Quality, ItemLevel,
-                   RequiredLevel, class as item_class,
-                   subclass, InventoryType, dmg_min1,
-                   dmg_max1, armor, stat_type1,
-                   stat_value1, stat_type2, stat_value2,
-                   stat_type3, stat_value3
+            SELECT *, class as item_class
             FROM item_template
             WHERE entry = %s
             LIMIT 1
@@ -140,10 +137,10 @@ class GuideToolItemMixin:
             result += f"Armor: {item['armor']}\n"
 
         stats = []
-        for i in range(1, 4):
+        for i in range(1, 11):
             stat_type = item[f'stat_type{i}']
             stat_val = item[f'stat_value{i}']
-            if stat_type and stat_val:
+            if stat_val:
                 stat_name = stat_names.get(stat_type, f'Stat{stat_type}')
                 stats.append(f"+{stat_val} {stat_name}")
         if stats:
@@ -189,110 +186,120 @@ class GuideToolItemMixin:
         return result
 
     def _find_item_upgrades(self, params: dict) -> str:
-        """Find item upgrades for a specific item."""
-        current_item = params.get("current_item", "")
-        player_level = params.get("player_level", 80)
-        player_class = params.get("player_class", "").lower()
-
-        if not current_item:
-            return "Please specify the current item name."
-
+        """Compare attainable requirements and base stats, never simulate DPS."""
+        current_item = params.get('current_item', '')
+        snapshot = getattr(self, 'snapshot', None)
+        if snapshot is None:
+            return ("Error executing tool: full character snapshot unavailable. "
+                    "Cannot verify personal gear requirements with this server.")
+        role = params.get('role')
+        preferred = params.get('preferred_stats') or self.role_stats.get(role, [])
+        if not role:
+            return ("Please specify the intended role/spec before comparing "
+                    "gear: tank, healer, melee, ranged or caster.")
         conn = self.get_connection()
         cursor = conn.cursor(dictionary=True)
-
-        candidates = self._search_item_candidates(
-            cursor, current_item
-        )
-        if not candidates:
+        try:
+            candidates = self._search_item_candidates(cursor, current_item)
+            if not candidates:
+                return f"Item '{current_item}' not found."
+            # A worn item resolves otherwise ambiguous item names.
+            worn = set(snapshot['equipment'].values())
+            matches = [item for item in candidates if item['entry'] in worn]
+            if len(matches) == 1:
+                candidates = matches
+            elif self._is_ambiguous_top_match(candidates):
+                return self._format_item_clarification(current_item, candidates)
+            cursor.execute("SELECT * FROM item_template WHERE entry = %s",
+                           (candidates[0]['entry'],))
+            current = cursor.fetchone()
+            if not current:
+                return f"Item '{current_item}' not found."
+            # Chest/robe items share a slot. Other hand configurations require
+            # a whole-loadout comparison and are deliberately not mixed here.
+            slots = (5, 20) if current['InventoryType'] in (5, 20) else (
+                current['InventoryType'],)
+            cursor.execute(f"""
+                SELECT * FROM item_template
+                WHERE InventoryType IN ({','.join(['%s'] * len(slots))})
+                  AND ItemLevel >= %s AND ItemLevel <= %s
+                  AND RequiredLevel <= %s AND entry <> %s
+                  AND (AllowableClass & %s) <> 0
+                  AND (AllowableRace & %s) <> 0
+                ORDER BY ItemLevel ASC, entry ASC
+            """, (*slots, current['ItemLevel'],
+                  current['ItemLevel'] + self.upgrade_level_range,
+                  snapshot['level'], current['entry'],
+                  snapshot['class_mask'], snapshot['race_mask']))
+            upgrades = [item for item in cursor.fetchall()
+                        if meets_requirements(item, snapshot)
+                        and (not preferred or
+                             set(preferred).intersection(item_stats(item)))]
+            upgrades = upgrades[:self.upgrade_limit]
+            current_link = (f"[[item:{current['entry']}:{current['name']}:"
+                            f"{current['Quality']}]]")
+            result = (f"Comparison candidates for {current_link} ({role}). "
+                      "These meet known level, race, class, proficiency and "
+                      "reputation requirements at request time.\n")
+            if not upgrades:
+                return result + "No matching candidates in the configured range."
+            for item in upgrades:
+                marker = (f"[[item:{item['entry']}:{item['name']}:"
+                          f"{item['Quality']}]]")
+                sources = self._comparison_sources(cursor, item['entry'])
+                comparison = (
+                    f"{marker} (iLvl {item['ItemLevel']}, requires level "
+                    f"{item['RequiredLevel']}), versus {current_link}: "
+                    f"{stat_deltas(current, item)}. {sources}")
+                result += comparison + '\n'
+                self.item_comparisons[marker] = comparison
+            return result + (
+                "Do not call candidates definite upgrades based on item level. "
+                "Consider gains AND losses for the stated spec internally. "
+                "Ordinary answers use links, sources and qualitative reasons, "
+                "not numeric stat lists; tooltips provide those numbers. Base comparisons "
+                "exclude enchants, gems, socket/set bonuses and proc/use effects; "
+                "unique-equipped, hand rules and script conditions need in-game "
+                "checks. Sources are leads, not proof of access or affordability. "
+                "These limitations guide reasoning internally; do not recite "
+                "them in ordinary upgrade answers. Mention an excluded effect "
+                "only if requested or materially relevant. Preserve the "
+                "returned link markers exactly.")
+        finally:
             cursor.close()
             conn.close()
-            return f"Item '{current_item}' not found."
 
-        if self._is_ambiguous_top_match(candidates):
-            result = self._format_item_clarification(
-                current_item, candidates
-            )
-            cursor.close()
-            conn.close()
-            return result
-
+    def _comparison_sources(self, cursor, item_id):
+        """Source leads without misrepresenting raw loot weights as rates."""
         cursor.execute("""
-            SELECT entry, name, ItemLevel,
-                   InventoryType, class as item_class,
-                   subclass
-            FROM item_template
-            WHERE entry = %s
-            LIMIT 1
-        """, (candidates[0]['entry'],))
-
-        current = cursor.fetchone()
-
-        if not current:
-            cursor.close()
-            conn.close()
-            return f"Item '{current_item}' not found."
-
-        class_mask = {
-            'warrior': 1, 'paladin': 2, 'hunter': 4, 'rogue': 8,
-            'priest': 16, 'death knight': 32, 'shaman': 64, 'mage': 128,
-            'warlock': 256, 'druid': 1024
-        }
-        class_bit = class_mask.get(player_class, 0)
-
-        class_preferred_stats = {
-            'hunter': [3, 7, 31, 32, 38],
-            'rogue': [3, 7, 31, 32, 38],
-            'warrior': [4, 7, 31, 32, 38],
-            'death knight': [4, 7, 31, 32, 38],
-            'paladin': [4, 7, 5, 31, 45],
-            'shaman': [5, 7, 31, 45, 3],
-            'druid': [3, 5, 7, 31, 45],
-            'mage': [5, 7, 31, 32, 45],
-            'warlock': [5, 7, 31, 32, 45],
-            'priest': [5, 6, 7, 31, 45],
-        }
-        preferred_stats = class_preferred_stats.get(player_class, [])
-
-        stat_filter = ""
-        if preferred_stats:
-            stat_conditions = []
-            for stat in preferred_stats:
-                stat_conditions.append(f"stat_type1 = {stat} OR stat_type2 = {stat} OR stat_type3 = {stat}")
-            stat_filter = f"AND ({' OR '.join(stat_conditions)})"
-
-        cursor.execute(f"""
-            SELECT entry, name, ItemLevel, Quality, RequiredLevel,
-                   stat_type1, stat_value1, stat_type2, stat_value2
-            FROM item_template
-            WHERE InventoryType = %s
-              AND ItemLevel > %s
-              AND ItemLevel <= %s
-              AND RequiredLevel <= %s
-              AND (AllowableClass = -1 OR AllowableClass = 0 OR (AllowableClass & %s) > 0)
-              {stat_filter}
-            ORDER BY ItemLevel ASC
-            LIMIT 10
-        """, (current['InventoryType'], current['ItemLevel'], current['ItemLevel'] + 30, player_level, class_bit if class_bit else 2047))
-
-        upgrades = cursor.fetchall()
-        cursor.close()
-        conn.close()
-
-        if not upgrades:
-            return f"No suitable upgrades found for {current['name']} (iLvl {current['ItemLevel']}) with {player_class}-appropriate stats within your level range."
-
-        stat_names = {3: 'Agi', 4: 'Str', 5: 'Int', 6: 'Spi', 7: 'Stam', 31: 'Hit', 32: 'Crit', 38: 'AP', 45: 'SP'}
-
-        result = f"Upgrades for {current['name']} (iLvl {current['ItemLevel']}) for {player_class}:\n"
-        for u in upgrades:
-            stats = []
-            if u['stat_type1'] and u['stat_value1']:
-                stats.append(f"+{u['stat_value1']} {stat_names.get(u['stat_type1'], '?')}")
-            if u['stat_type2'] and u['stat_value2']:
-                stats.append(f"+{u['stat_value2']} {stat_names.get(u['stat_type2'], '?')}")
-            stat_str = f" [{', '.join(stats)}]" if stats else ""
-            item_link = f"[[item:{u['entry']}:{u['name']}:{u['Quality']}]]"
-            result += f"- {item_link} (iLvl {u['ItemLevel']}, req {u['RequiredLevel']}){stat_str}\n"
-
-        result += "\nIMPORTANT: Include the [[item:...]] markers exactly as shown - they become clickable item links!"
-        return result
+            SELECT DISTINCT ct.entry, ct.name FROM npc_vendor nv
+            JOIN creature_template ct ON nv.entry = ct.entry
+            WHERE nv.item = %s ORDER BY ct.entry LIMIT %s
+        """, (item_id, self.upgrade_limit))
+        sources = [f"Vendor [[npc:{row['entry']}:{row['name']}]]"
+                   for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT ID, LogTitle, QuestLevel FROM quest_template
+            WHERE %s IN (RewardItem1, RewardItem2, RewardItem3, RewardItem4,
+                         RewardChoiceItemID1, RewardChoiceItemID2,
+                         RewardChoiceItemID3, RewardChoiceItemID4,
+                         RewardChoiceItemID5, RewardChoiceItemID6)
+            ORDER BY ID LIMIT %s
+        """, (item_id, self.upgrade_limit))
+        eligible = set(self.snapshot['eligible_quest_ids'])
+        for row in cursor.fetchall():
+            state = ("eligible to accept" if row['ID'] in eligible else
+                     "not currently eligible to accept; may be in quest log")
+            sources.append(f"Quest [[quest:{row['ID']}:{row['LogTitle']}:"
+                           f"{row['QuestLevel']}]] ({state})")
+        cursor.execute("""
+            SELECT DISTINCT ct.entry, ct.name FROM creature_loot_template cl
+            JOIN creature_template ct ON cl.Entry = ct.lootid
+            WHERE cl.Item = %s AND cl.Reference = 0
+            ORDER BY ct.entry LIMIT %s
+        """, (item_id, self.upgrade_limit))
+        sources.extend(f"Loot [[npc:{row['entry']}:{row['name']}]]"
+                       for row in cursor.fetchall())
+        return ("Source leads: " + "; ".join(sources) if sources else
+                "Source not found in direct vendor/quest/creature lookups; "
+                "crafting, reference loot and other sources are not covered.")

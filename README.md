@@ -20,6 +20,17 @@ Ask a question, get an answer with clickable item/quest/spell links, all backed 
 
 ## Latest Updates
 
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+
+### September 2026 - Easier Model and Provider Switching
+
+- Added model-aware request compatibility for Anthropic, OpenAI, Google
+  Gemini, OpenRouter, and local Ollama models.
+- Added reasoning-safe token budgets and bounded recovery when a provider
+  rejects an unsupported request parameter.
+- Expanded provider setup guidance so changing models normally requires only
+  selecting the provider and exact model ID.
+
 ### May 2026 - Google Gemini and OpenRouter Support
 
 - Added Google Gemini support through Google's OpenAI-compatible API,
@@ -72,7 +83,12 @@ Every item, quest, spell, and NPC name in responses becomes a clickable WoW link
 ## Features
 
 ### Real Answers from Your Server
-Every answer comes from your actual game database, not from AI memory or training data. When the guide says [Riverpaw Leather Vest] drops from [Hogger] at 15%, that's the real drop rate on your server. No guesswork, no approximations, no outdated information.
+Factual questions require a tool lookup. Answers must use entity links returned
+by tools, and empty answers or answers supported only by failed lookups are
+rejected. The model still writes the explanation: these checks reduce errors
+but do not prove every sentence correct. Loot weights, grouped/reference loot,
+server rates and conditional drops must not be confused with an effective
+player-specific drop probability.
 
 ### Closest Results First
 Ask "where can I learn cooking?" and the guide shows the nearest trainer first, with the area they're in and map coordinates: *"Zarrin in Dolanaar (~15 m southeast at 57.1, 61.3)"*. Works with GPS addons. Supports yards or meters (configurable).
@@ -87,8 +103,11 @@ Every item, quest, spell, and NPC name in responses becomes a proper in-game hyp
 Ask questions however you want. "Where can I buy cooking supplies?", "any blacksmith trainer near me?", "I need to find an inn", the guide understands what you're looking for even with typos or casual phrasing.
 
 ### Multi-Provider Support
-Works with Anthropic Claude, OpenAI GPT, Google Gemini, or OpenRouter.
-Haiku, GPT-4o-mini, GPT-4.1-mini, Gemini 3.1 Flash-Lite, and
+Works with Anthropic Claude, OpenAI GPT, Google Gemini, OpenRouter, or
+local Ollama models. OpenAI-compatible requests use automatic model
+capability profiles and learn safe parameter corrections when a new
+model explicitly rejects an option.
+Haiku, GPT-5.6 Luna, GPT-4o-mini, GPT-4.1-mini, Gemini 3.1 Flash-Lite, and
 OpenRouter-hosted Haiku 4.5 / GPT mini models are recommended for
 their speed and low cost.
 
@@ -138,11 +157,94 @@ planning what to do next.
 ## Requirements
 
 - AzerothCore WotLK (3.3.5a)
-- Python 3.8+
+- Python 3.10+
 - An API key from [Anthropic](https://console.anthropic.com/),
   [OpenAI](https://platform.openai.com/),
   [Google AI Studio](https://aistudio.google.com/app/apikey), or
-  [OpenRouter](https://openrouter.ai/keys)
+  [OpenRouter](https://openrouter.ai/keys); or a reachable local Ollama server
+
+## Provider and Model Setup
+
+Configuration uses unquoted `Key = value` lines. Copy exact API model IDs,
+not provider display names. OpenRouter IDs use `vendor/model`; Ollama IDs use
+the name and optional tag shown by `ollama list`. Leave an optional value
+empty after `=`.
+
+Unlike chatter's universal model key, the guide has one model key per
+provider. This lets users keep several provider setups in the same file and
+switch by changing only `LLMGuide.Provider` after the keys and model choices
+have been entered once.
+
+| Provider | Provider value | Model setting | Credential |
+|----------|----------------|---------------|------------|
+| Anthropic | `anthropic` | `LLMGuide.Anthropic.Model` | `LLMGuide.Anthropic.ApiKey` |
+| OpenAI | `openai` | `LLMGuide.OpenAI.Model` | `LLMGuide.OpenAI.ApiKey` |
+| Google | `google` | `LLMGuide.Google.Model` | `LLMGuide.Google.ApiKey` |
+| OpenRouter | `openrouter` | `LLMGuide.OpenRouter.Model` | `LLMGuide.OpenRouter.ApiKey` |
+| Ollama | `ollama` | `LLMGuide.Ollama.Model` | None |
+
+Ready-to-copy examples (use only one provider value at a time):
+
+```ini
+# Anthropic
+LLMGuide.Provider = anthropic
+LLMGuide.Anthropic.Model = claude-haiku-4-5-20251001
+LLMGuide.Anthropic.ApiKey = sk-ant-xxxxx
+
+# OpenAI Luna
+LLMGuide.Provider = openai
+LLMGuide.OpenAI.Model = gpt-5.6-luna
+LLMGuide.OpenAI.ApiKey = sk-xxxxx
+LLMGuide.OpenAI.ReasoningEffort = none
+LLMGuide.OpenAI.MaxTokensMultiplier = 4
+
+# Google Gemini
+LLMGuide.Provider = google
+LLMGuide.Google.Model = gemini-3.1-flash-lite
+LLMGuide.Google.ApiKey = AIza-xxxxx
+
+# OpenRouter
+LLMGuide.Provider = openrouter
+LLMGuide.OpenRouter.Model = anthropic/claude-haiku-4.5
+LLMGuide.OpenRouter.ApiKey = sk-or-v1-xxxxx
+
+# Local Ollama from a Docker bridge
+LLMGuide.Provider = ollama
+LLMGuide.Ollama.Model = qwen3:8b
+LLMGuide.Ollama.BaseUrl = http://host.docker.internal:11434
+LLMGuide.Ollama.DisableThinking = 1
+```
+
+Restart `ac-llm-guide-bridge` after changing provider or model settings. The
+bridge automatically selects compatible token, temperature, and reasoning
+parameters, and remembers explicit unsupported-parameter corrections until
+the process restarts. Users normally do not need to retune parameters merely
+because they changed models.
+
+For OpenAI Luna, `none` is the fast setting and allows the configured
+temperature. Higher reasoning efforts can consume more of the output budget;
+the bridge applies `OpenAI.MaxTokensMultiplier` whenever hidden reasoning may
+be active and omits temperature when the selected model/effort does not
+support it. See the [official Luna model page](https://developers.openai.com/api/docs/models/gpt-5.6-luna).
+
+For Ollama, first run `ollama pull <model>` on the Ollama host. A host-run
+bridge normally uses `http://localhost:11434`; a Docker bridge normally uses
+`http://host.docker.internal:11434`. Do not append `/v1`. The model must
+reliably support OpenAI-style tool/function calling and structured arguments;
+plain-chat models cannot provide grounded guide answers.
+
+Ollama's OpenAI-compatible endpoint does not accept a per-request context
+size. Because the guide sends a large tool catalog, set
+`OLLAMA_CONTEXT_LENGTH` before starting Ollama, or create a custom model whose
+Modelfile contains `PARAMETER num_ctx 8192`. Confirm the loaded value in the
+`CONTEXT` column from `ollama ps`. Keep `Ollama.DisableThinking = 1` for
+Qwen3-style models unless you deliberately want reasoning tokens.
+
+Ollama accepts tool definitions through this endpoint but currently ignores
+`tool_choice`. If its routing pass returns text instead of a tool call, the
+guide skips that optional routing pass and lets the normal evidence/tool loop
+handle the question. On the last tool round, the guide removes the tool
+definitions entirely so the model must produce its final answer.
 
 ## Quick Start (Docker)
 
@@ -156,9 +258,14 @@ cp modules/mod-llm-guide/conf/mod_llm_guide.conf.dist \
 Edit `env/dist/etc/modules/mod_llm_guide.conf`:
 ```ini
 LLMGuide.Enable = 1
+LLMGuide.Provider = anthropic
+LLMGuide.Anthropic.Model = claude-haiku-4-5-20251001
 LLMGuide.Anthropic.ApiKey = sk-ant-your-key-here
 LLMGuide.Database.Host = ac-database
 ```
+
+Use another recipe from [Provider and Model Setup](#provider-and-model-setup)
+if you prefer OpenAI, Google, OpenRouter, or Ollama.
 
 ### 2. Add the bridge to docker-compose.override.yml
 
@@ -245,6 +352,8 @@ Use `.ag` for both normal questions and saved-history navigation.
 .ag show 1
 .ag show 11
 .ag clear
+.ag status
+.ag cancel
 ```
 
 ### Commands
@@ -258,6 +367,8 @@ Use `.ag` for both normal questions and saved-history navigation.
 | `.ag history <count> page <number>` | Move to a specific history page while also choosing how many entries to show per page, up to 10 |
 | `.ag show <number>` | Open one saved interaction by its history number and show the full stored question and full stored answer |
 | `.ag clear` | Clear this character's saved guide conversation history |
+| `.ag status` | Show outstanding requests without making a provider call |
+| `.ag cancel` | Cancel outstanding requests; late worker replies are discarded |
 
 ### History Navigation
 
@@ -294,43 +405,180 @@ That will open the full saved question and full saved answer for entry
 
 ## Configuration
 
+When upgrading, start the updated bridge before using the updated C++ module.
+Bridge startup preserves existing data, widens character context storage and
+adds the snapshot and request-recovery columns automatically. Its database
+account needs ALTER permission. Full character snapshots and the status/cancel
+commands require the updated C++ module to be built and installed.
+
+Request timeouts, retry limits, worker count and gear comparison filters are
+documented in `conf/mod_llm_guide.conf.dist`. Worldserver settings use
+`.reload config`; bridge settings require a bridge restart. Gear comparisons
+show base-stat tradeoffs and known requirements, not simulated performance;
+gems, enchants, set bonuses, procs and source accessibility need further checks.
+
+Equipment summaries label the actual worn slots (including separate rings,
+trinkets and back) and provide verified item links. Profession summaries include
+primary professions, Fishing, Cooking and First Aid; Riding is listed separately
+as a travel skill, and racial skills are not listed as professions. These context
+improvements require the updated C++ module.
+
+The bridge links exact, unambiguous item names from the current request's tool
+results, without inventing IDs. Comparison tools retain base-stat deltas,
+required levels and acquisition source leads for the answer model. An optional
+diagnostic appendix can repeat them in full. Unknown sources remain explicit. These checks
+do not establish affordability, dungeon access, character DPS or pet scaling,
+and candidates are not an exhaustive best-in-slot ranking.
+
+Tool defaults are injected only into fields accepted by that tool's schema.
+The bridge can restore canonical link formatting when the entity type, ID and
+normalized name agree with current tool evidence. Unknown IDs, different names
+and ambiguous matches remain rejected; rejected-link logs identify the entity
+type and ID for diagnosis.
+
+Shared question routing covers all registered guide tools. Narrow exact requests
+can select a lookup directly; other factual questions use a classifier call on
+the configured provider/model. Its complete plan is validated against existing
+tool schemas before any lookup executes. Ambiguous or invalid plans ask for
+clarification. Lookup results feed the answer stage, which can request further
+tools. Routing shares the request deadline and can add latency and token cost.
+
+Service routing uses canonical categories, not fuzzy title matching. Flight
+masters are located by their database NPC flag, including Gryphon Masters.
+Travel route data remains incomplete: routing does not prove a fastest route or
+which flight nodes a character has unlocked. Model intent selection can still
+be wrong; validation constrains calls but does not guarantee interpretation.
+
+Answer-readiness checks run locally before each answer round, without a
+separate model review call. They track failed, empty and unresolved lookups;
+missing service-NPC distances; unavailable character snapshots; incomplete
+upgrade comparisons; and the limits of travel data. The existing tool loop can
+fill gaps within its normal deadline and round budget. Unresolved limitations
+are retained in the final response. If no lookup produced usable information,
+a deterministic limitation message replaces the model's answer without
+exposing backend errors. Identical successful retries clear earlier failures;
+different searches remain separate, and all checks reset with each request.
+
+These checks recognize known result formats, not arbitrary natural-language
+intent or every possible factual contradiction. They do not prove that the
+selected tools fully answer the player's question. New tool output formats
+should update the readiness rules and their regression tests.
+
+All unresolved answer links are checked, including references previously
+mentioned only as plain text. History itself is not evidence. NPCs, items
+and quests are rechecked
+by exact database ID and normalized name; spell identities use the current
+spell-name catalog shared with spell tools. Only identities are refreshed:
+historical locations, availability, stats and route claims are not revalidated
+by this step. Gameplay answers still require current factual lookup evidence.
+Missing IDs and mismatched names ask for clarification; a real identity does
+not prove the answer's claims about it. Checks share the request deadline,
+deduplicate repeated links,
+and use a configurable budget without another LLM call.
+
+Quest detail and chain tools accept `quest_id` for exact stage selection, or
+`quest_name` for title lookup. Active quest IDs come from the server request,
+are exposed by character context, and prioritize same-title stages before
+result limits. Multiple active stages with the same title ask for clarification.
+Chain output labels the selected active stage and reports partial-link limits;
+it does not claim that the last returned stage establishes the final reward.
+
+Conversation resolution is shared across subjects. With routing and memory
+enabled, follow-ups get one additional bounded model call that rewrites the
+question into a standalone request, preserving related goals, entity IDs and
+constraints while discarding unrelated goals on topic switches. Ambiguous
+references ask for clarification. Unsupported capabilities are explained
+instead of silently substituting a different search. Interpretation remains
+model-dependent; this does not implement new crafting or route-planning tools.
+
+Compact intent and pending clarification state use the existing per-character
+memory summary field. Entity references are reconstructed from answer links;
+they are not evidence of current facts. Oversized intent falls back to legacy
+Q&A history without storing truncated JSON. Memory pruning and memory-disabled
+behavior remain unchanged. No additional tables or files store player state.
+
+All provider adapters export portable copies of the same tool definitions;
+local validation retains root alternative-argument requirements. Export tests
+cover every catalog. Opt-in `test_provider_live.py` uses the configured provider
+with synthetic conversations and no database writes; set
+`GUIDE_TEST_PROVIDER_CONFIG` to a bridge config to run it. These tests make
+paid API requests and are skipped by default.
+
+Answers on every topic now target 60 words by default: a useful conclusion or
+next action, essential locations/links and brief uncertainty, not exhaustive
+lists. Explicit requests for detail can be longer. This is a soft generation
+target, not truncation: existing link-safe chat chunking remains available.
+Full comparison appendices are off by default. Readiness diagnostics remain in
+model context, while player-facing limitations are short. These choices reduce
+duplicate text and the frequency of multi-chunk replies.
+Ordinary recommendations omit internal lists of unevaluated effects (enchants,
+gems, procs and pet scaling), retaining useful tradeoffs and unknown sources.
+Excluded effects are discussed only when requested or materially relevant.
+Ordinary item recommendations use links, sources and qualitative reasons;
+numeric stat parentheses are omitted because tooltips show the stats. A final
+presentation pass removes known comparison boilerplate and stat parentheses
+without modifying entity links, coordinates or equip requirements. Explicit
+stat/comparison questions retain numeric detail. Old answers are cleaned for
+provider history replay without modifying stored memories.
+
 Key settings in `mod_llm_guide.conf`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `LLMGuide.Enable` | 0 | Enable the module |
-| `LLMGuide.Provider` | anthropic | `anthropic`, `openai`, `google`, or `openrouter` |
+| `LLMGuide.Provider` | anthropic | `anthropic`, `openai`, `google`, `openrouter`, or `ollama` |
 | `LLMGuide.Anthropic.ApiKey` | -- | Your Anthropic API key |
+| `LLMGuide.Anthropic.Model` | claude-haiku-4-5-20251001 | Exact Anthropic model ID |
 | `LLMGuide.OpenAI.ApiKey` | -- | Your OpenAI API key |
+| `LLMGuide.OpenAI.Model` | gpt-4o-mini | Exact OpenAI API model ID, such as `gpt-5.6-luna` |
+| `LLMGuide.OpenAI.ReasoningEffort` | empty | Model default; use `none` for fast Luna requests |
+| `LLMGuide.OpenAI.MaxTokensMultiplier` | 4 | Output multiplier used only when hidden OpenAI reasoning may be active |
 | `LLMGuide.Google.ApiKey` | -- | Your Google Gemini API key |
-| `LLMGuide.OpenRouter.ApiKey` | -- | Your OpenRouter API key, or the key for another OpenAI-compatible endpoint |
-| `LLMGuide.OpenRouter.BaseUrl` | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint URL |
-| `LLMGuide.OpenAICompatible.DisableThinking` | 0 | Request non-reasoning mode for the OpenAI-compatible provider |
-| `LLMGuide.OpenAICompatible.ReasoningControl` | `thinking_disabled` | Use `reasoning_none` for OpenCode Go DeepSeek V4 Flash |
+| `LLMGuide.Google.Model` | gemini-3.1-flash-lite | Exact Gemini API model ID |
+| `LLMGuide.Google.ReasoningEffort` | minimal | Used when `ThinkingBudget` is empty |
+| `LLMGuide.Google.ThinkingBudget` | empty | Whole token budget; `0` disables thinking on Gemini 2.5 Flash |
+| `LLMGuide.Google.MaxTokensMultiplier` | 1 | Output-budget multiplier |
+| `LLMGuide.OpenRouter.ApiKey` | -- | Your OpenRouter API key |
+| `LLMGuide.OpenRouter.Model` | anthropic/claude-haiku-4.5 | Exact `vendor/model` slug |
+| `LLMGuide.OpenRouter.BaseUrl` | https://openrouter.ai/api/v1 | OpenAI-compatible endpoint |
+| `LLMGuide.OpenRouter.HttpReferer` | empty | Optional complete attribution URL |
+| `LLMGuide.OpenRouter.Title` | empty | Optional plain-text app title |
+| `LLMGuide.Ollama.Model` | qwen3:8b | Local model; must support tool/function calling |
+| `LLMGuide.Ollama.BaseUrl` | http://host.docker.internal:11434 | Local Ollama server URL |
+| `LLMGuide.Ollama.DisableThinking` | 1 | Send `reasoning_effort = none` to compatible local models |
 | `LLMGuide.Database.Host` | localhost | Use `ac-database` for Docker |
+| `LLMGuide.Database.Name` | acore_characters | Characters database for requests and memories |
+| `LLMGuide.Database.WorldName` | acore_world | World database for game-data lookups; restart the bridge after changing |
 | `LLMGuide.CooldownSeconds` | 10 | Seconds between questions |
 | `LLMGuide.MaxTokens` | 300 | Max response tokens |
-| `LLMGuide.TruncationRetryMaxTokens` | 1600 | Bounded retry budget for truncated or empty compatible-provider responses |
-| `LLMGuide.Temperature` | 0.7 | Creativity (0.0-1.0) |
+| `LLMGuide.Temperature` | 0.7 | Creativity (0.0-1.0); omitted automatically when unsupported |
 | `LLMGuide.DistanceUnit` | yards | `yards` or `meters` |
 | `LLMGuide.Memory.Enable` | 1 | Remember conversations |
 | `LLMGuide.Memory.MaxPerCharacter` | 20 | Max stored memories |
 | `LLMGuide.Memory.ContextCount` | 5 | Recent memories in context |
+| `LLMGuide.Routing.Enable` | 1 | Shared question triage; 0 restores direct tool calling |
+| `LLMGuide.Conversation.Enable` | 1 | Resolve follow-ups before routing; shares request deadline and routing token budget |
+| `LLMGuide.Answer.TargetWords` | 60 | Soft answer-length target for all topics |
+| `LLMGuide.Answer.AppendComparisonDetails` | 0 | Opt into the full diagnostic comparison appendix |
+| `LLMGuide.Routing.MaxCalls` | 3 | Maximum independent initial lookups |
+| `LLMGuide.Routing.MaxTokens` | 600 | Classifier output token budget |
+| `LLMGuide.Readiness.Enable` | 1 | Check lookup completeness and retain limitations; restart bridge after changes |
+| `LLMGuide.Followup.MaxEntityChecks` | 8 | Maximum unresolved identities checked per answer; excess asks for clarification |
 
 ## Cost
 
-| Provider | Model | Per 1000 questions |
-|----------|-------|-------------------|
-| Anthropic | Claude Haiku | ~$0.10-0.15 |
-| OpenAI | GPT-4o-mini | ~$0.15-0.20 |
-| OpenAI | GPT-4.1-mini | varies by tool use and response length |
-| Google | Gemini 3.1 Flash-Lite | varies by tool use and response length |
-| OpenRouter | Claude Haiku 4.5, GPT-4o-mini, or GPT-4.1-mini | varies by routed provider and response length |
+Cost depends on the selected model, prompt/tool traffic, answer length, and
+current provider prices. Check the live pricing page for
+[Anthropic](https://www.anthropic.com/pricing),
+[OpenAI](https://developers.openai.com/api/docs/pricing),
+[Google Gemini](https://ai.google.dev/gemini-api/docs/pricing), or the chosen
+[OpenRouter model](https://openrouter.ai/models). Local Ollama has no API
+token charge but uses your own hardware and electricity.
 
 Tool/function calling is required. The guide asks the model to call
 database tools for quests, NPCs, items, spells, trainers, vendors, and
 other factual lookups. Use a model that reliably supports function
-calling on your chosen provider. Haiku, GPT-4o-mini, GPT-4.1-mini,
+calling on your chosen provider. Haiku, GPT-5.6 Luna, GPT-4o-mini, GPT-4.1-mini,
 Gemini 3.1 Flash-Lite, and OpenRouter-hosted Claude Haiku 4.5 / GPT
 mini models are the recommended choices.
 

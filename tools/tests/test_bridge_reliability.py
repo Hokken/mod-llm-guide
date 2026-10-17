@@ -1,4 +1,5 @@
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,7 +86,7 @@ class BridgeReliabilityTests(unittest.TestCase):
         )
 
     def make_bridge(self):
-        return LLMBridge({
+        bridge = LLMBridge({
             "LLMGuide.Provider": "openrouter",
             "LLMGuide.OpenRouter.ApiKey": "test-key",
             "LLMGuide.OpenRouter.Model": "deepseek-v4-flash",
@@ -99,6 +100,8 @@ class BridgeReliabilityTests(unittest.TestCase):
             "LLMGuide.MaxTokens": "300",
             "LLMGuide.TruncationRetryMaxTokens": "1600",
         })
+        bridge.deadline = time.monotonic() + 120
+        return bridge
 
     def call_with_fake(self, bridge, fake_client):
         fake_openai = SimpleNamespace(
@@ -142,8 +145,11 @@ class BridgeReliabilityTests(unittest.TestCase):
         ])
         bridge = self.make_bridge()
         bridge.tool_executor = SimpleNamespace(
-            execute_tool=lambda name, args: "tool result"
+            execute_tool=lambda name, args: "tool result",
+            readiness_prompt=lambda: "",
+            evidence=SimpleNamespace(results=[]),
         )
+        bridge.max_tool_rounds = 3
 
         result, _, tools_used = self.call_with_fake(
             bridge, fake_client
@@ -152,7 +158,7 @@ class BridgeReliabilityTests(unittest.TestCase):
         self.assertEqual(result, "Final answer.")
         self.assertTrue(tools_used)
         calls = fake_client.chat.completions.calls
-        self.assertNotIn("tool_choice", calls[0])
+        self.assertEqual(calls[0]["tool_choice"], "required")
         self.assertEqual(calls[-1]["tool_choice"], "none")
 
 
