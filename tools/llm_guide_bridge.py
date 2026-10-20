@@ -77,7 +77,7 @@ def resolve_model_alias(model_name: str) -> str:
 
 
 def openrouter_headers(config: dict) -> dict:
-    """Build optional OpenRouter app-attribution headers."""
+    """Build attribution and compatible-provider routing headers."""
     headers = {}
     referer = get_config_value(
         config, "LLMGuide.OpenRouter.HttpReferer", ""
@@ -89,6 +89,22 @@ def openrouter_headers(config: dict) -> dict:
         headers["HTTP-Referer"] = referer
     if title:
         headers["X-OpenRouter-Title"] = title
+    base_url = get_config_value(
+        config, "LLMGuide.OpenRouter.BaseUrl", ""
+    ).strip().lower()
+    if "opencode.ai/zen/go/" in base_url.rstrip("/") + "/":
+        session_id = get_config_value(
+            config,
+            "LLMGuide.OpenAICompatible.SessionId",
+            "mod-llm-guide",
+        ).strip() or "mod-llm-guide"
+        user_agent = get_config_value(
+            config,
+            "LLMGuide.OpenAICompatible.UserAgent",
+            "mod-llm-guide/1.0",
+        ).strip() or "mod-llm-guide/1.0"
+        headers.setdefault("x-opencode-session", session_id)
+        headers.setdefault("User-Agent", user_agent)
     return headers
 
 
@@ -121,6 +137,21 @@ CONTEXT_TOOLS = export_tools([CONTEXT_TOOL])
 CONTEXT_TOOLS_OPENAI = convert_tools_to_openai_format(CONTEXT_TOOLS)
 ROUTING_TOOLS = export_tools([*GAME_TOOLS, CLARIFY_TOOL])
 ROUTING_TOOLS_OPENAI = convert_tools_to_openai_format(ROUTING_TOOLS)
+
+
+def clean_final_response(text: str) -> str:
+    """Remove provider-only reasoning wrappers from player-visible text."""
+    cleaned = (text or "").strip()
+    cleaned = re.sub(
+        r"^<think>.*?</think>\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    cleaned = re.sub(
+        r"^</think>\s*", "", cleaned, flags=re.IGNORECASE
+    )
+    return cleaned.strip()
 
 
 def extract_zone_from_context(char_context: str) -> str:
@@ -351,6 +382,23 @@ class LLMBridge:
             OPENROUTER_BASE_URL,
         )
         self.openrouter_headers = openrouter_headers(config)
+        self.openai_compatible_disable_thinking = (
+            get_config_int(
+                config, "LLMGuide.OpenAICompatible.DisableThinking", 0
+            ) == 1
+        )
+        self.openai_compatible_reasoning_control = get_config_value(
+            config,
+            "LLMGuide.OpenAICompatible.ReasoningControl",
+            "thinking_disabled",
+        ).strip().lower()
+        self.max_tokens = get_config_int(config, "LLMGuide.MaxTokens", 500)
+        self.truncation_retry_max_tokens = max(
+            self.max_tokens,
+            get_config_int(
+                config, "LLMGuide.TruncationRetryMaxTokens", 1600
+            ),
+        )
         self.ollama_model = get_config_value(
             config, "LLMGuide.Ollama.Model", DEFAULT_OLLAMA_MODEL
         )
@@ -362,7 +410,6 @@ class LLMBridge:
         self.ollama_disable_thinking = get_config_int(
             config, "LLMGuide.Ollama.DisableThinking", 1
         ) == 1
-        self.max_tokens = get_config_int(config, "LLMGuide.MaxTokens", 300)
         self.temperature = get_config_float(config, "LLMGuide.Temperature", 0.7)
         self.system_prompt = get_config_value(config, "LLMGuide.SystemPrompt",
             "You are a helpful WoW guide. Be concise.")
@@ -1088,6 +1135,14 @@ class LLMBridge:
         model = model or self.openai_model
 
         def invoke_chat_completion(**request_kwargs):
+            if compatible_provider == "openrouter" and self.openai_compatible_disable_thinking:
+                control = self.openai_compatible_reasoning_control
+                if control in ("reasoning_none", "reasoning"):
+                    request_kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": "none"}
+                elif control in ("reasoning_effort_none", "reasoning_effort"):
+                    request_kwargs["reasoning_effort"] = "none"
+                else:
+                    request_kwargs.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
             return self.provider_call(
                 client.chat.completions.create,
                 **request_kwargs,
@@ -1208,17 +1263,31 @@ class LLMBridge:
                     ) else "none" if round_num == max_tool_rounds
                     else "auto"
                 )
-            response = create_chat_completion(
-                invoke_chat_completion,
-                request_kwargs,
-                compatible_provider,
-                model,
-                logger,
-                reasoning_token_multiplier=(
-                    self.openai_max_tokens_multiplier
-                    if compatible_provider == "openai" else 1
-                ),
-            )
+            for completion_attempt in range(2):
+                response = create_chat_completion(
+                    invoke_chat_completion,
+                    request_kwargs,
+                    compatible_provider,
+                    model,
+                    logger,
+                    reasoning_token_multiplier=(
+                        self.openai_max_tokens_multiplier
+                        if compatible_provider == "openai" else 1
+                    ),
+                )
+                if not response.choices:
+                    raise ValueError("Provider returned no choices")
+                choice = response.choices[0]
+                if getattr(choice, 'finish_reason', None) != 'length':
+                    break
+                token_field = ('max_completion_tokens' if 'max_completion_tokens' in request_kwargs
+                               else 'max_tokens')
+                budget = request_kwargs[token_field]
+                if completion_attempt or budget >= self.truncation_retry_max_tokens:
+                    break
+                total_tokens += int(getattr(getattr(response, 'usage', None), 'total_tokens', 0) or 0)
+                request_kwargs[token_field] = min(budget * 2, self.truncation_retry_max_tokens)
+                logger.warning('Retrying truncated guide response with budget %s', request_kwargs[token_field])
 
             usage = getattr(response, "usage", None)
             total_tokens += int(
@@ -1270,7 +1339,7 @@ class LLMBridge:
                     })
             else:
                 # No more tool calls - return final text response
-                text = message.content or ""
+                text = clean_final_response(message.content or "")
                 return text, total_tokens, tools_were_used
 
         # If we hit max rounds, return whatever we have
